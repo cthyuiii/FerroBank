@@ -1,0 +1,21 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: ferrobank-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ferrobank
+      POSTGRES_PASSWORD: ferrobank
+      POSTGRES_DB: ferrobank
+    ports:
+      - "5432:5432"
+    volumes:
+      - ferrobank_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ferrobank -d ferrobank"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  ferrobank_pg:

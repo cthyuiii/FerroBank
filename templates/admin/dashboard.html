@@ -1,0 +1,142 @@
+{% extends "layout.html" %}
+
+{% block title %}Admin Dashboard · FerroBank{% endblock %}
+
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+  <div>
+    <span class="text-xs font-semibold uppercase tracking-wider text-amber-700">Admin</span>
+    <h1 class="text-3xl font-semibold text-stone-900 mt-1">Dashboard</h1>
+  </div>
+  <a href="/admin/audit" class="text-sm text-stone-600 hover:text-amber-700">View audit log →</a>
+</div>
+
+<!-- KPI cards -->
+<section class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+  <div class="p-5 rounded-lg border border-stone-200 bg-white">
+    <div class="text-xs font-medium uppercase tracking-wider text-stone-500">Active accounts</div>
+    <div class="mt-2 text-3xl font-semibold text-stone-900">{{ snapshot.active_accounts }}</div>
+  </div>
+  <div class="p-5 rounded-lg border border-stone-200 bg-white">
+    <div class="text-xs font-medium uppercase tracking-wider text-stone-500">Total deposits</div>
+    <div class="mt-2 text-3xl font-semibold text-stone-900">${{ snapshot.total_deposits }}</div>
+  </div>
+  <div class="p-5 rounded-lg border border-stone-200 bg-white">
+    <div class="text-xs font-medium uppercase tracking-wider text-stone-500">Loan portfolio</div>
+    <div class="mt-2 text-3xl font-semibold text-stone-900">${{ snapshot.portfolio_outstanding }}</div>
+  </div>
+  <div class="p-5 rounded-lg border border-stone-200 bg-white">
+    <div class="text-xs font-medium uppercase tracking-wider text-stone-500">Pending loans</div>
+    <div class="mt-2 text-3xl font-semibold text-stone-900">{{ snapshot.pending_loans }}</div>
+  </div>
+</section>
+
+<!-- Recent transfers -->
+<section class="mt-10">
+  <div class="flex items-center justify-between mb-3">
+    <h2 class="text-lg font-semibold text-stone-900">Recent transfers</h2>
+    <span class="text-sm text-stone-500">latest 10</span>
+  </div>
+  <div class="rounded-lg border border-stone-200 bg-white overflow-hidden">
+    {% if snapshot.recent_transfers.is_empty() %}
+      <div class="p-6 text-sm text-stone-500 text-center">No transfers yet.</div>
+    {% else %}
+      <table class="w-full text-sm">
+        <thead class="bg-stone-50 text-stone-600">
+          <tr class="text-left">
+            <th class="px-4 py-2 font-medium">ID</th>
+            <th class="px-4 py-2 font-medium">From → To</th>
+            <th class="px-4 py-2 font-medium text-right">Amount</th>
+            <th class="px-4 py-2 font-medium">Status</th>
+            <th class="px-4 py-2 font-medium">When</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-stone-100">
+          {% for t in snapshot.recent_transfers %}
+            <tr>
+              <td class="px-4 py-2 font-mono text-stone-500">#{{ t.id }}</td>
+              <td class="px-4 py-2">{{ t.from_account_id }} → {{ t.to_account_id }}</td>
+              <td class="px-4 py-2 text-right font-mono">${{ t.amount }}</td>
+              <td class="px-4 py-2">
+                <span class="text-xs px-2 py-0.5 rounded-full bg-stone-100 text-stone-700 border border-stone-200">{{ t.status.label() }}</span>
+              </td>
+              <td class="px-4 py-2 text-stone-500">{{ t.created_at.format("%Y-%m-%d %H:%M") }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </div>
+</section>
+
+<!-- Flagged transfers -->
+{% if !snapshot.flagged_transfers.is_empty() %}
+<section class="mt-10">
+  <div class="flex items-center justify-between mb-3">
+    <h2 class="text-lg font-semibold text-stone-900">Flagged transfers</h2>
+    <span class="text-xs px-2 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200">{{ snapshot.flagged_transfers.len() }} flagged</span>
+  </div>
+  <div class="rounded-lg border border-red-200 bg-red-50 overflow-hidden">
+    <table class="w-full text-sm">
+      <thead class="bg-red-100/60 text-red-900">
+        <tr class="text-left">
+          <th class="px-4 py-2 font-medium">ID</th>
+          <th class="px-4 py-2 font-medium">From → To</th>
+          <th class="px-4 py-2 font-medium text-right">Amount</th>
+          <th class="px-4 py-2 font-medium">Status</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-red-200">
+        {% for t in snapshot.flagged_transfers %}
+          <tr>
+            <td class="px-4 py-2 font-mono text-red-700">#{{ t.id }}</td>
+            <td class="px-4 py-2">{{ t.from_account_id }} → {{ t.to_account_id }}</td>
+            <td class="px-4 py-2 text-right font-mono">${{ t.amount }}</td>
+            <td class="px-4 py-2">{{ t.status.label() }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+
+<!-- Pending loan applications -->
+<section class="mt-10">
+  <div class="flex items-center justify-between mb-3">
+    <h2 class="text-lg font-semibold text-stone-900">Pending loan applications</h2>
+  </div>
+  <div class="rounded-lg border border-stone-200 bg-white overflow-hidden">
+    {% if snapshot.pending_loans_list.is_empty() %}
+      <div class="p-6 text-sm text-stone-500 text-center">No pending applications.</div>
+    {% else %}
+      <table class="w-full text-sm">
+        <thead class="bg-stone-50 text-stone-600">
+          <tr class="text-left">
+            <th class="px-4 py-2 font-medium">ID</th>
+            <th class="px-4 py-2 font-medium">User</th>
+            <th class="px-4 py-2 font-medium text-right">Principal</th>
+            <th class="px-4 py-2 font-medium text-right">Rate</th>
+            <th class="px-4 py-2 font-medium text-right">Term</th>
+            <th class="px-4 py-2 font-medium"></th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-stone-100">
+          {% for l in snapshot.pending_loans_list %}
+            <tr>
+              <td class="px-4 py-2 font-mono text-stone-500">#{{ l.id }}</td>
+              <td class="px-4 py-2">User #{{ l.user_id }}</td>
+              <td class="px-4 py-2 text-right font-mono">${{ l.principal }}</td>
+              <td class="px-4 py-2 text-right font-mono">{{ l.interest_rate }}</td>
+              <td class="px-4 py-2 text-right">{{ l.term_months }} mo</td>
+              <td class="px-4 py-2 text-right">
+                <a href="/loans/{{ l.id }}" class="text-amber-700 hover:underline">Review</a>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}

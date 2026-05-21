@@ -1,0 +1,12 @@
+{% extends "layout.html" %}
+
+{% block title %}{{ status }} {{ title }} · FerroBank{% endblock %}
+
+{% block content %}
+<section class="py-16 max-w-xl">
+  <div class="text-7xl font-mono text-stone-300">{{ status }}</div>
+  <h1 class="mt-2 text-3xl font-semibold text-stone-900">{{ title }}</h1>
+  <p class="mt-4 text-stone-600 leading-relaxed">{{ message }}</p>
+  <a href="/" class="inline-block mt-8 text-amber-700 hover:underline">← Back to home</a>
+</section>
+{% endblock %}

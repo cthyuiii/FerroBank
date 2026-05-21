@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}FerroBank{% endblock %}</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    html { font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif; }
+    code, pre { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+  </style>
+  {% block extra_head %}{% endblock %}
+</head>
+<body class="min-h-screen bg-stone-50 text-stone-900 antialiased flex flex-col">
+  {% include "partials/nav.html" %}
+
+  <main class="flex-1 w-full max-w-6xl mx-auto px-6 py-10">
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="border-t border-stone-200 mt-12 py-6">
+    <div class="max-w-6xl mx-auto px-6 flex flex-wrap items-center justify-between gap-3 text-xs text-stone-500">
+      <span>FerroBank &middot; Iron-clad core banking, built in Rust</span>
+      <span class="font-mono">v0.1.0</span>
+    </div>
+  </footer>
+</body>
+</html>

@@ -1,0 +1,57 @@
+{% extends "layout.html" %}
+
+{% block title %}FerroBank · Iron-clad core banking{% endblock %}
+
+{% block content %}
+<section class="py-10 sm:py-16">
+  <div class="max-w-3xl">
+    <span class="inline-block text-xs font-semibold uppercase tracking-wider text-amber-700 mb-3">FerroBank</span>
+    <h1 class="text-4xl sm:text-5xl font-semibold tracking-tight text-stone-900 leading-tight">
+      Iron-clad core banking,<br>
+      <span class="text-amber-700">built in Rust.</span>
+    </h1>
+    <p class="mt-6 text-lg text-stone-600 leading-relaxed">
+      Open accounts, move money safely, take out loans, and audit every transaction —
+      on top of a type-safe, concurrency-correct backend. A reference implementation
+      for the SIT Web Programming module.
+    </p>
+
+    <div class="mt-8 flex flex-wrap gap-3">
+      <a href="/register" class="px-5 py-2.5 rounded-md bg-amber-700 text-white font-medium hover:bg-amber-800 transition">
+        Open an account
+      </a>
+      <a href="/login" class="px-5 py-2.5 rounded-md border border-stone-300 bg-white text-stone-700 hover:border-stone-400 transition">
+        Sign in
+      </a>
+    </div>
+  </div>
+</section>
+
+<section class="grid sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-8">
+  <div class="p-5 rounded-lg border border-stone-200 bg-white hover:border-amber-700 transition">
+    <h3 class="font-semibold text-stone-900">Accounts</h3>
+    <p class="mt-2 text-sm text-stone-600 leading-relaxed">Open savings or checking accounts, view balances and statements.</p>
+  </div>
+  <div class="p-5 rounded-lg border border-stone-200 bg-white hover:border-amber-700 transition">
+    <h3 class="font-semibold text-stone-900">Transfers</h3>
+    <p class="mt-2 text-sm text-stone-600 leading-relaxed">ACID money movement with OTP confirmation and audit trail.</p>
+  </div>
+  <div class="p-5 rounded-lg border border-stone-200 bg-white hover:border-amber-700 transition">
+    <h3 class="font-semibold text-stone-900">Loans</h3>
+    <p class="mt-2 text-sm text-stone-600 leading-relaxed">Apply, repay, and track amortization on the fly.</p>
+  </div>
+  <div class="p-5 rounded-lg border border-stone-200 bg-white hover:border-amber-700 transition">
+    <h3 class="font-semibold text-stone-900">Admin</h3>
+    <p class="mt-2 text-sm text-stone-600 leading-relaxed">Cross-module dashboards for staff, with role-based access.</p>
+  </div>
+</section>
+
+<section class="mt-12 p-6 rounded-lg bg-stone-100 border border-stone-200">
+  <h3 class="font-semibold text-stone-900">For developers</h3>
+  <p class="mt-2 text-sm text-stone-600 leading-relaxed">
+    Built with Actix Web 4, Askama, SQLx, PostgreSQL, argon2, and rust_decimal. See
+    <code class="bg-white px-1.5 py-0.5 rounded border border-stone-200">ARCHITECTURE.md</code>
+    for the layered design and module boundaries.
+  </p>
+</section>
+{% endblock %}
