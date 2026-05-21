@@ -38,30 +38,98 @@ See **[ARCHITECTURE.md](./ARCHITECTURE.md)** for how the pieces fit and **[TEAM_
 
 ## Quick start
 
-### Prerequisites
+Pick the section that matches your OS — the steps are otherwise identical.
 
-- Rust 1.78+ (`rustup toolchain install stable`)
-- Docker + Docker Compose (for the local Postgres)
-- `sqlx-cli`: `cargo install sqlx-cli --no-default-features --features postgres,rustls`
+### macOS
 
-### Run it
+#### One-time install
 
 ```bash
-# 1. Start Postgres
+# Rust toolchain (skip if you already have it)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source "$HOME/.cargo/env"
+
+# Docker Desktop (provides the Postgres container)
+brew install --cask docker
+open -a Docker            # launch once so the daemon starts
+
+# SQLx CLI for migrations
+cargo install sqlx-cli --no-default-features --features postgres,rustls
+```
+
+#### Run
+
+```bash
+# 1. Start Postgres in the background
 docker compose up -d db
 
 # 2. Set up env
 cp .env.example .env
 
-# 3. Create the database and apply migrations
+# 3. Generate a strong session secret and paste it into .env (SESSION_SECRET=...)
+openssl rand -base64 64
+
+# 4. Create the database and apply migrations
 sqlx database create
 sqlx migrate run
 
-# 4. Run the app
+# 5. Run the app
 cargo run
 ```
 
 Open <http://localhost:8080>.
+
+---
+
+### Windows (PowerShell)
+
+Open **PowerShell 7+** (or Windows PowerShell 5.1) — not Command Prompt.
+
+#### One-time install
+
+```powershell
+# Rust toolchain (skip if you already have it)
+winget install Rustlang.Rustup
+# Restart the shell so cargo is on PATH.
+
+# Docker Desktop (provides the Postgres container)
+winget install Docker.DockerDesktop
+# Launch Docker Desktop once from the Start Menu so the daemon starts.
+
+# SQLx CLI for migrations
+cargo install sqlx-cli --no-default-features --features postgres,rustls
+```
+
+> If `winget` isn't available, download installers from
+> <https://rustup.rs/> and <https://www.docker.com/products/docker-desktop/>.
+
+#### Run
+
+```powershell
+# 1. Start Postgres in the background
+docker compose up -d db
+
+# 2. Set up env
+Copy-Item .env.example .env
+
+# 3. Generate a strong session secret and paste it into .env (SESSION_SECRET=...)
+$bytes = New-Object byte[] 64
+[System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+[Convert]::ToBase64String($bytes)
+
+# 4. Create the database and apply migrations
+sqlx database create
+sqlx migrate run
+
+# 5. Run the app
+cargo run
+```
+
+Open <http://localhost:8080>.
+
+> If you have Git for Windows installed, you can use Git Bash and follow the
+> **macOS** instructions verbatim (the `openssl`, `cp`, and `source` commands
+> all work there).
 
 ### Default seeded users (created by 001_init.sql)
 
