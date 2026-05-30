@@ -1,0 +1,48 @@
+{% extends "layout.html" %}
+
+{% block title %}Open new account · FerroBank{% endblock %}
+
+{% block content %}
+<section class="max-w-lg mx-auto py-10">
+  <span class="text-xs font-semibold uppercase tracking-wider text-amber-700">Accounts</span>
+  <h1 class="text-3xl font-semibold text-stone-900 mt-1">Open a new account</h1>
+  <p class="mt-2 text-sm text-stone-600">Pick the type of account you want to open. You can have as many as you like.</p>
+
+  {% if let Some(msg) = error %}
+    <div class="mt-6 p-3 rounded-md bg-red-50 border border-red-200 text-sm text-red-800">
+      {{ msg }}
+    </div>
+  {% endif %}
+
+  <form action="/accounts/new" method="POST" class="mt-6 space-y-3">
+    <label class="block p-4 rounded-lg border border-stone-200 bg-white hover:border-amber-700 transition cursor-pointer has-[:checked]:border-amber-700 has-[:checked]:bg-amber-50">
+      <div class="flex items-start gap-3">
+        <input type="radio" name="kind" value="savings" required class="mt-1 accent-amber-700">
+        <div>
+          <div class="font-semibold text-stone-900">Savings</div>
+          <div class="mt-0.5 text-sm text-stone-600">Set money aside and earn interest. Best for emergency funds and longer-term goals.</div>
+        </div>
+      </div>
+    </label>
+
+    <label class="block p-4 rounded-lg border border-stone-200 bg-white hover:border-amber-700 transition cursor-pointer has-[:checked]:border-amber-700 has-[:checked]:bg-amber-50">
+      <div class="flex items-start gap-3">
+        <input type="radio" name="kind" value="checking" class="mt-1 accent-amber-700">
+        <div>
+          <div class="font-semibold text-stone-900">Checking</div>
+          <div class="mt-0.5 text-sm text-stone-600">Everyday spending account. Use for transfers, bill pay, and day-to-day balances.</div>
+        </div>
+      </div>
+    </label>
+
+    <div class="flex items-center gap-3 pt-3">
+      <button
+        type="submit"
+        class="px-5 py-2.5 rounded-md bg-amber-700 text-white font-medium hover:bg-amber-800 transition">
+        Open account
+      </button>
+      <a href="/accounts" class="text-sm text-stone-600 hover:text-amber-700">Cancel</a>
+    </div>
+  </form>
+</section>
+{% endblock %}

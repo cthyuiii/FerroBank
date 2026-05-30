@@ -1,14 +1,24 @@
 //! Accounts handlers — owned by the Accounts module (Member 3).
 //!
-//! When you implement these:
-//!   - Use `svc: web::Data<dyn AccountService>` (NOT `PgAccountService`) — that's
-//!     the OOP/polymorphism part the grader is looking for.
-//!   - Use `user: CurrentUser` to get the logged-in user.
-//!   - Render templates from `templates/accounts/`.
+//! Flow:
+//!   GET  /accounts            → list current user's accounts
+//!   GET  /accounts/new        → form to choose account type
+//!   POST /accounts/new        → open a new account, redirect to detail
+//!   GET  /accounts/:id        → show account detail
+//!   POST /accounts/:id/freeze → staff-only, freeze the account
+//!   POST /accounts/:id/close  → owner or staff, close a zero-balance account
 
-use actix_web::{web, Responder};
+use actix_web::{web, HttpResponse};
+use askama::Template;
+use rust_decimal::Decimal;
+use serde::Deserialize;
 
-use super::coming_soon;
+use crate::errors::AppError;
+use crate::middleware::auth::CurrentUser;
+use crate::models::account::{Account, AccountStatus, AccountType};
+use crate::models::user::Role;
+use crate::services::account_service::AccountService;
+use crate::view::LayoutCtx;
 
 pub fn routes(cfg: &mut web::ServiceConfig) {
     cfg.service(
@@ -16,22 +26,162 @@ pub fn routes(cfg: &mut web::ServiceConfig) {
             .route("", web::get().to(list))
             .route("/new", web::get().to(new_form))
             .route("/new", web::post().to(create))
-            .route("/{id}", web::get().to(detail)),
+            .route("/{id}", web::get().to(detail))
+            .route("/{id}/freeze", web::post().to(freeze))
+            .route("/{id}/close", web::post().to(close)),
     );
 }
 
-async fn list() -> impl Responder {
-    coming_soon("Accounts · List", "Member 3")
+// ── Templates ────────────────────────────────────────────────────────
+
+#[derive(Template)]
+#[template(path = "accounts/list.html")]
+struct ListTemplate {
+    layout: LayoutCtx,
+    accounts: Vec<Account>,
+    total_balance: Decimal,
 }
 
-async fn new_form() -> impl Responder {
-    coming_soon("Accounts · New", "Member 3")
+#[derive(Template)]
+#[template(path = "accounts/new.html")]
+struct NewTemplate {
+    layout: LayoutCtx,
+    error: Option<String>,
 }
 
-async fn create() -> impl Responder {
-    coming_soon("Accounts · Create", "Member 3")
+#[derive(Template)]
+#[template(path = "accounts/detail.html")]
+struct DetailTemplate {
+    layout: LayoutCtx,
+    account: Account,
+    can_manage: bool,
 }
 
-async fn detail(_path: web::Path<i64>) -> impl Responder {
-    coming_soon("Accounts · Detail", "Member 3")
+// ── Form payloads ────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct NewAccountForm {
+    kind: String, // "savings" | "checking"
+}
+
+// ── Handlers ─────────────────────────────────────────────────────────
+
+async fn list(
+    svc: web::Data<dyn AccountService>,
+    user: CurrentUser,
+) -> Result<HttpResponse, AppError> {
+    let accounts = svc.list_for_user(user.id).await?;
+    let total_balance: Decimal = accounts
+        .iter()
+        .filter(|a| a.status == AccountStatus::Active)
+        .map(|a| a.balance)
+        .sum();
+
+    render(ListTemplate {
+        layout: LayoutCtx::from_user(Some(&user)),
+        accounts,
+        total_balance,
+    })
+}
+
+async fn new_form(user: CurrentUser) -> Result<HttpResponse, AppError> {
+    render(NewTemplate {
+        layout: LayoutCtx::from_user(Some(&user)),
+        error: None,
+    })
+}
+
+async fn create(
+    form: web::Form<NewAccountForm>,
+    svc: web::Data<dyn AccountService>,
+    user: CurrentUser,
+) -> Result<HttpResponse, AppError> {
+    let kind = match form.kind.as_str() {
+        "savings" => AccountType::Savings,
+        "checking" => AccountType::Checking,
+        _ => {
+            return render(NewTemplate {
+                layout: LayoutCtx::from_user(Some(&user)),
+                error: Some("Please choose Savings or Checking.".into()),
+            });
+        }
+    };
+
+    let account = svc.open_account(user.id, kind).await?;
+
+    Ok(HttpResponse::Found()
+        .insert_header(("Location", format!("/accounts/{}", account.id)))
+        .finish())
+}
+
+async fn detail(
+    path: web::Path<i64>,
+    svc: web::Data<dyn AccountService>,
+    user: CurrentUser,
+) -> Result<HttpResponse, AppError> {
+    let account_id = path.into_inner();
+    let account = svc.get_by_id(account_id).await?;
+
+    // Customers can only see their own accounts. Staff can see any.
+    if account.user_id != user.id && user.role == Role::Customer {
+        return Err(AppError::Forbidden);
+    }
+
+    // Owners always see manage buttons; staff also see them on any account.
+    let can_manage = account.user_id == user.id || user.role != Role::Customer;
+
+    render(DetailTemplate {
+        layout: LayoutCtx::from_user(Some(&user)),
+        account,
+        can_manage,
+    })
+}
+
+async fn freeze(
+    path: web::Path<i64>,
+    svc: web::Data<dyn AccountService>,
+    user: CurrentUser,
+) -> Result<HttpResponse, AppError> {
+    // Only staff (Teller / Admin) can freeze accounts.
+    if user.role == Role::Customer {
+        return Err(AppError::Forbidden);
+    }
+
+    let account_id = path.into_inner();
+    svc.freeze_account(account_id).await?;
+
+    Ok(HttpResponse::Found()
+        .insert_header(("Location", format!("/accounts/{account_id}")))
+        .finish())
+}
+
+async fn close(
+    path: web::Path<i64>,
+    svc: web::Data<dyn AccountService>,
+    user: CurrentUser,
+) -> Result<HttpResponse, AppError> {
+    let account_id = path.into_inner();
+
+    // Owner or staff can close.
+    let account = svc.get_by_id(account_id).await?;
+    if account.user_id != user.id && user.role == Role::Customer {
+        return Err(AppError::Forbidden);
+    }
+
+    svc.close_account(account_id).await?;
+
+    Ok(HttpResponse::Found()
+        .insert_header(("Location", "/accounts"))
+        .finish())
+}
+
+// ── Render helper ────────────────────────────────────────────────────
+
+fn render<T: Template>(tmpl: T) -> Result<HttpResponse, AppError> {
+    let body = tmpl
+        .render()
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("accounts template: {e}")))?;
+    Ok(HttpResponse::Ok()
+        .content_type("text/html; charset=utf-8")
+        .body(body))
 }

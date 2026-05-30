@@ -3,8 +3,14 @@
 --
 -- Sets up the foundational `users` table and `user_role` enum so the auth
 -- middleware compiles and the app boots. Module owners add migrations
--- 002_users.sql onwards (extending users), 003_accounts.sql, etc.
--- Coordinate migration numbers in the team chat before writing.
+-- 002_accounts.sql onwards. Coordinate migration numbers in the team chat
+-- before writing.
+--
+-- Seeding: dev users are NOT inserted here. After running migrations, seed
+-- the three dev users with:
+--   cargo run --bin seed
+-- This goes through the real AuthService::register so the password hashes
+-- are produced by the same argon2 code path that production uses.
 -- ─────────────────────────────────────────────────────────────────────────────
 
 -- Role enum. Must match the variants in `src/models/user.rs::Role`.
@@ -20,22 +26,3 @@ CREATE TABLE users (
 );
 
 CREATE INDEX users_email_idx ON users (email);
-
--- ─────────────────────────────────────────────────────────────────────────────
--- Dev seed: three users so login works on day 1 without going through
--- registration. Passwords below are argon2id hashes generated with:
---   echo -n 'admin123'  | argon2 $(openssl rand -base64 16) -id -t 2 -m 16 -p 1
---
--- DEVELOPMENT ONLY. Remove or change before any real deployment.
---   admin@ferrobank.local   / admin123   (admin)
---   teller@ferrobank.local  / teller123  (teller)
---   alice@ferrobank.local   / alice123   (customer)
---
--- The hashes below are placeholders; the Auth module owner (Member 2) will
--- regenerate real ones during their work and update this file in their PR.
--- ─────────────────────────────────────────────────────────────────────────────
-
-INSERT INTO users (email, password_hash, full_name, role) VALUES
-  ('admin@ferrobank.local',  '$argon2id$v=19$m=16,t=2,p=1$REPLACE$REPLACE',  'Admin User',  'admin'),
-  ('teller@ferrobank.local', '$argon2id$v=19$m=16,t=2,p=1$REPLACE$REPLACE',  'Teller User', 'teller'),
-  ('alice@ferrobank.local',  '$argon2id$v=19$m=16,t=2,p=1$REPLACE$REPLACE',  'Alice Smith', 'customer');

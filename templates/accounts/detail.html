@@ -1,0 +1,111 @@
+{% extends "layout.html" %}
+
+{% block title %}Account {{ account.account_number }} · FerroBank{% endblock %}
+
+{% block content %}
+<div class="mb-6">
+  <a href="/accounts" class="text-sm text-stone-600 hover:text-amber-700">← All accounts</a>
+</div>
+
+<!-- Hero: balance + account meta -->
+<section class="p-6 rounded-lg border border-stone-200 bg-white">
+  <div class="flex items-start justify-between flex-wrap gap-4">
+    <div>
+      <span class="text-xs font-semibold uppercase tracking-wider text-amber-700">
+        {{ account.kind.label() }} account
+      </span>
+      <h1 class="mt-1 font-mono text-2xl font-semibold text-stone-900">
+        {{ account.account_number }}
+      </h1>
+      <div class="mt-2">
+        {% if account.status == AccountStatus::Active %}
+          <span class="text-xs px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">{{ account.status.label() }}</span>
+        {% else if account.status == AccountStatus::Frozen %}
+          <span class="text-xs px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">{{ account.status.label() }}</span>
+        {% else %}
+          <span class="text-xs px-2 py-0.5 rounded-full bg-stone-100 text-stone-600 border border-stone-200">{{ account.status.label() }}</span>
+        {% endif %}
+      </div>
+    </div>
+    <div class="text-right">
+      <div class="text-xs font-medium uppercase tracking-wider text-stone-500">Current balance</div>
+      <div class="mt-1 font-mono text-4xl font-semibold text-stone-900">${{ account.balance }}</div>
+    </div>
+  </div>
+</section>
+
+<!-- Metadata grid -->
+<section class="grid sm:grid-cols-3 gap-4 mt-4">
+  <div class="p-4 rounded-lg border border-stone-200 bg-white">
+    <div class="text-xs font-medium uppercase tracking-wider text-stone-500">Account type</div>
+    <div class="mt-1 text-stone-900">{{ account.kind.label() }}</div>
+  </div>
+  <div class="p-4 rounded-lg border border-stone-200 bg-white">
+    <div class="text-xs font-medium uppercase tracking-wider text-stone-500">Status</div>
+    <div class="mt-1 text-stone-900">{{ account.status.label() }}</div>
+  </div>
+  <div class="p-4 rounded-lg border border-stone-200 bg-white">
+    <div class="text-xs font-medium uppercase tracking-wider text-stone-500">Opened</div>
+    <div class="mt-1 text-stone-900">{{ account.created_at.format("%B %-d, %Y") }}</div>
+  </div>
+</section>
+
+<!-- Primary action: move money (only from an active account) -->
+{% if account.status == AccountStatus::Active %}
+  <section class="mt-6 p-5 rounded-lg border border-amber-200 bg-amber-50 flex items-center justify-between flex-wrap gap-3">
+    <div>
+      <div class="font-semibold text-stone-900">Move money</div>
+      <div class="text-sm text-stone-600">Send funds from this account to another FerroBank account.</div>
+    </div>
+    <a href="/transfers/new?from={{ account.id }}"
+       class="px-4 py-2 rounded-md bg-amber-700 text-white font-medium hover:bg-amber-800 transition">
+      Start a transfer
+    </a>
+  </section>
+{% endif %}
+
+<!-- Management actions: only visible to the owner or staff -->
+{% if can_manage %}
+  <section class="mt-6">
+    <h2 class="text-sm font-semibold uppercase tracking-wider text-stone-500 mb-3">Manage account</h2>
+
+    <div class="rounded-lg border border-stone-200 bg-white divide-y divide-stone-100">
+      {% if account.status == AccountStatus::Active %}
+        <div class="p-4 flex items-center justify-between flex-wrap gap-3">
+          <div>
+            <div class="font-medium text-stone-900">Freeze this account</div>
+            <div class="text-sm text-stone-600">
+              Prevents new transfers until a staff member unfreezes it. Staff only.
+            </div>
+          </div>
+          <form action="/accounts/{{ account.id }}/freeze" method="POST">
+            <button type="submit"
+                    class="px-3 py-1.5 rounded-md border border-amber-300 bg-white text-sm font-medium text-amber-800 hover:bg-amber-50 transition"
+                    onclick="return confirm('Freeze account {{ account.account_number }}?');">
+              Freeze
+            </button>
+          </form>
+        </div>
+      {% endif %}
+
+      {% if account.status != AccountStatus::Closed %}
+        <div class="p-4 flex items-center justify-between flex-wrap gap-3">
+          <div>
+            <div class="font-medium text-stone-900">Close this account</div>
+            <div class="text-sm text-stone-600">
+              Permanently closes the account. Balance must be zero before closing.
+            </div>
+          </div>
+          <form action="/accounts/{{ account.id }}/close" method="POST">
+            <button type="submit"
+                    class="px-3 py-1.5 rounded-md border border-red-300 bg-white text-sm font-medium text-red-700 hover:bg-red-50 transition"
+                    onclick="return confirm('Close account {{ account.account_number }}? This cannot be undone.');">
+              Close
+            </button>
+          </form>
+        </div>
+      {% endif %}
+    </div>
+  </section>
+{% endif %}
+{% endblock %}

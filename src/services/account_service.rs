@@ -1,11 +1,12 @@
 //! Account service — owned by the Accounts module (Member 3).
 
 use async_trait::async_trait;
+use rand::Rng;
 use rust_decimal::Decimal;
 use sqlx::PgPool;
 
 use crate::errors::AppError;
-use crate::models::account::{Account, AccountType};
+use crate::models::account::{Account, AccountStatus, AccountType};
 
 #[async_trait]
 pub trait AccountService: Send + Sync {
@@ -13,11 +14,10 @@ pub trait AccountService: Send + Sync {
     async fn close_account(&self, account_id: i64) -> Result<(), AppError>;
     async fn freeze_account(&self, account_id: i64) -> Result<(), AppError>;
     async fn get_balance(&self, account_id: i64) -> Result<Decimal, AppError>;
+    async fn get_by_id(&self, account_id: i64) -> Result<Account, AppError>;
     async fn list_for_user(&self, user_id: i64) -> Result<Vec<Account>, AppError>;
 
     // ── Read-only methods exposed to the Admin Dashboard ─────────────
-    // Keep these cheap (single SELECT, indexed columns). The dashboard calls
-    // them on every load.
     async fn count_active(&self) -> Result<i64, AppError>;
     async fn total_deposits(&self) -> Result<Decimal, AppError>;
 }
@@ -30,49 +30,157 @@ impl PgAccountService {
     pub fn new(db: PgPool) -> Self {
         Self { db }
     }
+
+    /// Generate a 10-digit account number. Collisions are vanishingly rare at
+    /// this scale, but the UNIQUE constraint on `account_number` will catch any
+    /// race and `open_account` retries up to 3 times.
+    fn random_account_number() -> String {
+        let mut rng = rand::thread_rng();
+        let n: u64 = rng.gen_range(1_000_000_000..=9_999_999_999);
+        n.to_string()
+    }
 }
 
 #[async_trait]
 impl AccountService for PgAccountService {
-    async fn open_account(&self, _user_id: i64, _kind: AccountType) -> Result<Account, AppError> {
-        // TODO(Member 3):
-        //   - Generate a unique 10-digit account number.
-        //   - INSERT INTO accounts (user_id, account_number, kind, status, balance)
-        //     VALUES ($1, $2, $3, 'active', 0) RETURNING *.
-        todo!("AccountService::open_account")
+    async fn open_account(&self, user_id: i64, kind: AccountType) -> Result<Account, AppError> {
+        // Retry on the (extremely unlikely) account-number collision.
+        for attempt in 0..3 {
+            let account_number = Self::random_account_number();
+
+            let result = sqlx::query_as::<_, Account>(
+                r#"
+                INSERT INTO accounts (user_id, account_number, kind, status, balance)
+                VALUES ($1, $2, $3, 'active', 0)
+                RETURNING id, user_id, account_number, kind, status, balance, created_at
+                "#,
+            )
+            .bind(user_id)
+            .bind(&account_number)
+            .bind(kind)
+            .fetch_one(&self.db)
+            .await;
+
+            match result {
+                Ok(account) => {
+                    tracing::info!(
+                        user_id,
+                        account_id = account.id,
+                        account_number = %account.account_number,
+                        kind = ?account.kind,
+                        "opened account"
+                    );
+                    return Ok(account);
+                }
+                Err(sqlx::Error::Database(db_err))
+                    if db_err.is_unique_violation() && attempt < 2 =>
+                {
+                    tracing::warn!(attempt, "account_number collision, retrying");
+                    continue;
+                }
+                Err(e) => return Err(AppError::from(e)),
+            }
+        }
+        Err(AppError::Internal(anyhow::anyhow!(
+            "failed to open account after 3 attempts"
+        )))
     }
 
-    async fn close_account(&self, _account_id: i64) -> Result<(), AppError> {
-        // TODO(Member 3):
-        //   - Reject if balance != 0 (AppError::Conflict).
-        //   - UPDATE accounts SET status = 'closed' WHERE id = $1.
-        todo!("AccountService::close_account")
+    async fn close_account(&self, account_id: i64) -> Result<(), AppError> {
+        // Refuse to close an account that still holds money.
+        let account = self.get_by_id(account_id).await?;
+        if account.status == AccountStatus::Closed {
+            return Err(AppError::Conflict("account is already closed".into()));
+        }
+        if account.balance != Decimal::ZERO {
+            return Err(AppError::Conflict(format!(
+                "cannot close account with non-zero balance ({})",
+                account.balance
+            )));
+        }
+
+        sqlx::query(
+            r#"UPDATE accounts SET status = 'closed' WHERE id = $1 AND status <> 'closed'"#,
+        )
+        .bind(account_id)
+        .execute(&self.db)
+        .await?;
+
+        tracing::info!(account_id, "closed account");
+        Ok(())
     }
 
-    async fn freeze_account(&self, _account_id: i64) -> Result<(), AppError> {
-        // TODO(Member 3): UPDATE accounts SET status = 'frozen' WHERE id = $1.
-        todo!("AccountService::freeze_account")
+    async fn freeze_account(&self, account_id: i64) -> Result<(), AppError> {
+        let rows = sqlx::query(
+            r#"UPDATE accounts SET status = 'frozen' WHERE id = $1 AND status = 'active'"#,
+        )
+        .bind(account_id)
+        .execute(&self.db)
+        .await?;
+
+        if rows.rows_affected() == 0 {
+            return Err(AppError::Conflict(
+                "account is not active and cannot be frozen".into(),
+            ));
+        }
+
+        tracing::info!(account_id, "froze account");
+        Ok(())
     }
 
-    async fn get_balance(&self, _account_id: i64) -> Result<Decimal, AppError> {
-        // TODO(Member 3): SELECT balance FROM accounts WHERE id = $1.
-        todo!("AccountService::get_balance")
+    async fn get_balance(&self, account_id: i64) -> Result<Decimal, AppError> {
+        let row: (Decimal,) = sqlx::query_as(r#"SELECT balance FROM accounts WHERE id = $1"#)
+            .bind(account_id)
+            .fetch_optional(&self.db)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("account {account_id} not found")))?;
+        Ok(row.0)
     }
 
-    async fn list_for_user(&self, _user_id: i64) -> Result<Vec<Account>, AppError> {
-        // TODO(Member 3): SELECT * FROM accounts WHERE user_id = $1 ORDER BY created_at DESC.
-        todo!("AccountService::list_for_user")
+    async fn get_by_id(&self, account_id: i64) -> Result<Account, AppError> {
+        sqlx::query_as::<_, Account>(
+            r#"
+            SELECT id, user_id, account_number, kind, status, balance, created_at
+            FROM accounts
+            WHERE id = $1
+            "#,
+        )
+        .bind(account_id)
+        .fetch_optional(&self.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("account {account_id} not found")))
+    }
+
+    async fn list_for_user(&self, user_id: i64) -> Result<Vec<Account>, AppError> {
+        let rows = sqlx::query_as::<_, Account>(
+            r#"
+            SELECT id, user_id, account_number, kind, status, balance, created_at
+            FROM accounts
+            WHERE user_id = $1
+            ORDER BY created_at DESC
+            "#,
+        )
+        .bind(user_id)
+        .fetch_all(&self.db)
+        .await?;
+        Ok(rows)
     }
 
     // ── Admin Dashboard hooks ────────────────────────────────────────
-    // Return safe zero-values until Member 3 fills these in, so the
-    // Platform Lead's dashboard renders without panicking.
 
     async fn count_active(&self) -> Result<i64, AppError> {
-        Ok(0)
+        let row: (i64,) =
+            sqlx::query_as(r#"SELECT COUNT(*)::BIGINT FROM accounts WHERE status = 'active'"#)
+                .fetch_one(&self.db)
+                .await?;
+        Ok(row.0)
     }
 
     async fn total_deposits(&self) -> Result<Decimal, AppError> {
-        Ok(Decimal::ZERO)
+        let row: (Option<Decimal>,) =
+            sqlx::query_as(r#"SELECT SUM(balance) FROM accounts WHERE status = 'active'"#)
+                .fetch_one(&self.db)
+                .await?;
+        Ok(row.0.unwrap_or(Decimal::ZERO))
     }
 }

@@ -226,6 +226,23 @@ This pattern gives you:
 
 ---
 
+## Concurrency layers
+
+The v1.2 spec emphasises that the banking domain must demonstrate **both** database-level
+and application-level concurrency control. FerroBank uses two layers, each with a distinct job:
+
+| Layer | Primitive | Protects against |
+|---|---|---|
+| Database | `SELECT … FOR UPDATE` inside a `BEGIN / COMMIT` transaction | Lost updates between concurrent SQL processes, partial money moves, durability after crash |
+| Application (Rust) | `tokio::sync::Mutex` / `tokio::sync::RwLock` wrapped in `Arc` | OTP cache races, in-process rate-limit counters, in-flight transfer guards, login-attempt counters |
+
+**Lock ordering rule:** always acquire account locks in ascending `id` order to avoid deadlocks
+when two concurrent transfers touch the same pair of accounts in opposite directions.
+
+The report must explain which layer protects which invariant and why both are needed.
+
+---
+
 ## Database conventions
 
 - Tables in `snake_case`, plural (`accounts`, `transfers`).

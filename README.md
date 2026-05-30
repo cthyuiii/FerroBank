@@ -2,8 +2,15 @@
 
 **Iron-clad core banking, built in Rust.**
 
-A server-side-rendered enterprise banking platform built for the Web Programming module at SIT.
-Demonstrates layered architecture, OOP via traits, ACID money movement, role-based access control, and audit logging.
+A server-side-rendered enterprise banking platform built for **CSC1106 Web Programming** at SIT
+(spec v1.2 — Banking System domain).
+Demonstrates layered architecture, OOP via traits, ACID money movement with both database-level
+and application-level concurrency control, role-based access control, fraud detection, and audit logging.
+
+> **Group / Author info** — to be filled in by the group leader before submission:
+>
+> - Group Number: `g##`
+> - Members: `Name 1 (SIT ID)`, `Name 2 (SIT ID)`, `Name 3 (SIT ID)`, `Name 4 (SIT ID)`, `Name 5 (SIT ID)`
 
 ---
 
@@ -28,11 +35,13 @@ See **[ARCHITECTURE.md](./ARCHITECTURE.md)** for how the pieces fit and **[TEAM_
 
 | Module | Owner | Description |
 |---|---|---|
-| Auth | M2 | Registration, login, sessions, roles |
-| Accounts | M3 | Open/close accounts, balances, account types |
-| Transfers | M4 | ACID money movement, OTP confirm, audit log |
-| Loans | M5 | Applications, amortization, repayments |
-| Admin Dashboard | M1 (Platform Lead) | Cross-module read-only views & metrics |
+| Auth | M2 | Registration, login, sessions, roles, account lockout |
+| Accounts | M3 | Open/close accounts, balances, account types, PDF statements |
+| Transfers | M4 | ACID money movement, **Mutex + row-lock concurrency**, OTP confirm, fraud rules, audit log |
+| Loans & Fixed Deposits | M5 | Loan applications, amortization, repayments, fixed-deposit accrual |
+| Admin Dashboard | M1 (Platform Lead) | Cross-module read-only views, audit-log explorer |
+
+See **[TEAM_CHARTER.md](./TEAM_CHARTER.md)** for each member's group baseline and their individual extended feature (which together cover the 60% group + 40% individual marking criteria).
 
 ---
 
@@ -73,7 +82,10 @@ openssl rand -base64 64
 sqlx database create
 sqlx migrate run
 
-# 5. Run the app
+# 5. Seed three demo users (admin / teller / customer)
+cargo run --bin seed
+
+# 6. Run the app
 cargo run
 ```
 
@@ -121,7 +133,10 @@ $bytes = New-Object byte[] 64
 sqlx database create
 sqlx migrate run
 
-# 5. Run the app
+# 5. Seed three demo users (admin / teller / customer)
+cargo run --bin seed
+
+# 6. Run the app
 cargo run
 ```
 
@@ -131,15 +146,21 @@ Open <http://localhost:8080>.
 > **macOS** instructions verbatim (the `openssl`, `cp`, and `source` commands
 > all work there).
 
-### Default seeded users (created by 001_init.sql)
+### Default seeded users (created by `cargo run --bin seed`)
 
 | Email | Password | Role |
 |---|---|---|
 | `admin@ferrobank.local` | `admin123` *(change me)* | Admin |
 | `teller@ferrobank.local` | `teller123` | Teller |
-| `alice@ferrobank.local` | `alice123` | Customer |
+| `alice@ferrobank.local`  | `alice123`  | Customer |
 
-*Note: these seeds exist so teammates can develop without going through registration on every dev cycle. They are removed before any production deploy.*
+The seed binary calls `AuthService::register` for each user, so the passwords are
+hashed with the same argon2id code path that production uses. Re-running the
+seed is safe — existing users are skipped.
+
+*These dev seeds exist so teammates can log in without going through registration
+on every fresh database. They should be removed (or have their passwords rotated)
+before any real deployment.*
 
 ---
 
@@ -179,6 +200,22 @@ src/
 templates/            # Askama, one folder per module
 migrations/           # SQLx migrations, numbered
 ```
+
+---
+
+## Submission deliverables (spec v1.2)
+
+| # | File | Format | Max size |
+|---|---|---|---|
+| 1 | Source code archive | `g##_source.zip` | 20 MB |
+| 2 | Demo recording (15 min) | `g##_recording.mp4` | 200 MB |
+| 3 | Presentation slides | `g##_slides.pptx` + `g##_slides.pdf` | 20 MB each |
+| 4 | Project report (≤6 pages) | `g##_report.docx` + `g##_report.pdf` | 20 MB each |
+
+Every file must show **Group Number, Student Name(s), Student ID(s) (SIT)** on the cover / title.
+The report must explain each member's group contribution and their individual extended feature,
+and should be informed by a brief literature review of real banking systems (Cyclos, Mambu,
+open-source core banking projects) — see the Literature section in [TEAM_CHARTER.md](./TEAM_CHARTER.md).
 
 ---
 

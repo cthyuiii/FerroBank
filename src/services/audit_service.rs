@@ -48,16 +48,41 @@ impl PgAuditService {
 impl AuditService for PgAuditService {
     async fn record(
         &self,
-        _actor: Option<i64>,
-        _event: &str,
-        _payload: serde_json::Value,
+        actor: Option<i64>,
+        event: &str,
+        payload: serde_json::Value,
     ) -> Result<(), AppError> {
-        // Stubbed as a noop until Member 4 wires the audit_log table.
-        // INSERT INTO audit_log (actor_user_id, event, payload) VALUES ($1, $2, $3).
+        sqlx::query(
+            r#"
+            INSERT INTO audit_log (actor_user_id, event, payload)
+            VALUES ($1, $2, $3)
+            "#,
+        )
+        .bind(actor)
+        .bind(event)
+        .bind(&payload)
+        .execute(&self.db)
+        .await?;
+
+        // Mirror to the structured log so it shows up in the terminal during dev
+        // and ships to whatever sink tracing is wired to in prod.
+        tracing::info!(actor = ?actor, event = %event, payload = %payload, "audit");
+
         Ok(())
     }
 
-    async fn recent(&self, _limit: i64) -> Result<Vec<AuditEntry>, AppError> {
-        Ok(vec![])
+    async fn recent(&self, limit: i64) -> Result<Vec<AuditEntry>, AppError> {
+        let rows = sqlx::query_as::<_, AuditEntry>(
+            r#"
+            SELECT id, actor_user_id, event, payload, created_at
+            FROM audit_log
+            ORDER BY created_at DESC
+            LIMIT $1
+            "#,
+        )
+        .bind(limit)
+        .fetch_all(&self.db)
+        .await?;
+        Ok(rows)
     }
 }

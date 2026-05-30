@@ -1,41 +1,76 @@
 //! Transfer service — owned by the Transfers module (Member 4).
 //!
-//! THIS IS THE TECHNICAL CENTERPIECE OF THE PROJECT. The grader will look for:
-//!   1. Single SQL transaction wrapping every money move.
-//!   2. `SELECT ... FOR UPDATE` row locks on both account rows before reading balances.
-//!   3. Validation: positive amount, both accounts exist, not frozen/closed,
-//!      not the same account, sufficient balance.
-//!   4. An audit log row written for every attempt (success OR rejection).
-//!   5. OTP simulation: generate a 6-digit code, store it hashed, verify on confirm.
+//! Demonstrates two layers of concurrency control:
+//!
+//! 1. **Application-level rate limiting** via `tokio::sync::Mutex` over an
+//!    in-memory `HashMap`. Cheap, immediate, and prevents abusive bursts from
+//!    a single account before they ever reach the database.
+//!
+//! 2. **Database-level row locks** via `SELECT ... FOR UPDATE` inside a single
+//!    SQL transaction. Provides the strong correctness guarantee (no lost
+//!    updates, no double spending) when multiple Actix workers process
+//!    concurrent transfers against the same accounts.
+//!
+//! Together they answer the spec's call for "thread safety, transactional
+//! consistency, Mutex locking, rollback mechanisms, and concurrent request
+//! handling within Rust and Actix Web."
 
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
+use argon2::{
+    password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
+    Argon2,
+};
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
+use rand::Rng;
 use rust_decimal::Decimal;
+use serde_json::json;
 use sqlx::PgPool;
+use tokio::sync::Mutex;
 
 use crate::errors::AppError;
-use crate::models::transfer::Transfer;
+use crate::models::account::AccountStatus;
+use crate::models::transfer::{Transfer, TransferStatus};
 use crate::services::audit_service::AuditService;
+
+// ── Tunables ─────────────────────────────────────────────────────────
+const MAX_TRANSFERS_PER_WINDOW: usize = 5;
+const RATE_WINDOW: Duration = Duration::from_secs(60);
+/// Transfers at or above this amount get flagged for admin review.
+const LARGE_TRANSFER_THRESHOLD: i64 = 10_000;
+
+/// Public result of a successful `create` call. The handler shows the
+/// plaintext OTP on the confirm page (a real bank would SMS it instead).
+pub struct TransferCreated {
+    pub transfer: Transfer,
+    pub otp: String,
+}
 
 #[async_trait]
 pub trait TransferService: Send + Sync {
-    /// Step 1 of a transfer: create a pending row and an OTP. Money has NOT moved yet.
+    /// Step 1: validate, rate-limit, generate an OTP, insert a pending row.
+    /// Money does **not** move yet.
     async fn create(
         &self,
+        actor: i64,
         from_account_id: i64,
         to_account_id: i64,
         amount: Decimal,
         note: Option<String>,
-    ) -> Result<Transfer, AppError>;
+    ) -> Result<TransferCreated, AppError>;
 
-    /// Step 2 of a transfer: user submits the OTP, money is moved inside a single SQL txn.
-    async fn confirm(&self, transfer_id: i64, otp: &str) -> Result<Transfer, AppError>;
+    /// Step 2: verify the OTP, move money inside one SQL transaction,
+    /// audit the result.
+    async fn confirm(&self, actor: i64, transfer_id: i64, otp: &str)
+        -> Result<Transfer, AppError>;
 
-    /// All transfers visible to a particular user (either sender or recipient).
+    /// All transfers a user can see (either as sender or recipient).
     async fn history(&self, user_id: i64) -> Result<Vec<Transfer>, AppError>;
 
-    // ── Admin Dashboard hooks ────────────────────────────────────────
+    // ── Read-only methods exposed to the Admin Dashboard ─────────────
     async fn recent(&self, limit: i64) -> Result<Vec<Transfer>, AppError>;
     async fn flagged(&self) -> Result<Vec<Transfer>, AppError>;
 }
@@ -43,64 +78,392 @@ pub trait TransferService: Send + Sync {
 pub struct PgTransferService {
     pub db: PgPool,
     pub audit: Arc<dyn AuditService>,
+    /// Per-account rolling list of recent attempt timestamps, gated by an
+    /// async-aware Mutex. See module docs for why this lives alongside the
+    /// database row locks.
+    rate_limit: Mutex<HashMap<i64, Vec<Instant>>>,
 }
 
 impl PgTransferService {
     pub fn new(db: PgPool, audit: Arc<dyn AuditService>) -> Self {
-        Self { db, audit }
+        Self {
+            db,
+            audit,
+            rate_limit: Mutex::new(HashMap::new()),
+        }
     }
+
+    /// Returns `Ok(())` if the account is under the per-minute limit; otherwise
+    /// `AppError::Conflict`. Side effect: records this attempt's timestamp.
+    async fn check_rate_limit(&self, account_id: i64) -> Result<(), AppError> {
+        let now = Instant::now();
+        let mut map = self.rate_limit.lock().await;
+        let entry = map.entry(account_id).or_default();
+        // Drop timestamps older than the window — keeps the vec bounded.
+        entry.retain(|t| now.saturating_duration_since(*t) <= RATE_WINDOW);
+        if entry.len() >= MAX_TRANSFERS_PER_WINDOW {
+            return Err(AppError::Conflict(format!(
+                "rate limit: more than {} transfers in {}s",
+                MAX_TRANSFERS_PER_WINDOW,
+                RATE_WINDOW.as_secs()
+            )));
+        }
+        entry.push(now);
+        Ok(())
+    }
+}
+
+// ── Internal row used inside the confirm() transaction ──────────────
+//
+// We don't expose otp_hash / confirmed_at on the public Transfer struct —
+// they're implementation details of the OTP simulation.
+#[derive(sqlx::FromRow)]
+struct PendingRow {
+    id: i64,
+    from_account_id: i64,
+    to_account_id: i64,
+    amount: Decimal,
+    status: TransferStatus,
+    note: Option<String>,
+    otp_hash: Option<String>,
+    created_at: DateTime<Utc>,
 }
 
 #[async_trait]
 impl TransferService for PgTransferService {
     async fn create(
         &self,
-        _from_account_id: i64,
-        _to_account_id: i64,
-        _amount: Decimal,
-        _note: Option<String>,
+        actor: i64,
+        from_account_id: i64,
+        to_account_id: i64,
+        amount: Decimal,
+        note: Option<String>,
+    ) -> Result<TransferCreated, AppError> {
+        // ── Cheap validations before we touch the DB ────────────────────
+        if amount <= Decimal::ZERO {
+            return Err(AppError::BadRequest("amount must be greater than zero".into()));
+        }
+        if from_account_id == to_account_id {
+            return Err(AppError::BadRequest("cannot transfer to the same account".into()));
+        }
+
+        // ── Application-level concurrency control ──────────────────────
+        // Gate on a `tokio::sync::Mutex` before we even open a DB connection.
+        self.check_rate_limit(from_account_id).await?;
+
+        // ── OTP generation ─────────────────────────────────────────────
+        // 6-digit zero-padded code. Hashed with argon2 so the DB never holds
+        // the plaintext (defends against an attacker who reads the DB but
+        // not the live HTTPS response).
+        let otp: String = {
+            let mut rng = rand::thread_rng();
+            format!("{:06}", rng.gen_range(0..1_000_000u32))
+        };
+        let salt = SaltString::generate(&mut OsRng);
+        let otp_hash = Argon2::default()
+            .hash_password(otp.as_bytes(), &salt)
+            .map_err(AppError::from)?
+            .to_string();
+
+        // ── Insert pending row ─────────────────────────────────────────
+        let transfer = sqlx::query_as::<_, Transfer>(
+            r#"
+            INSERT INTO transfers
+                (from_account_id, to_account_id, amount, status, note, otp_hash)
+            VALUES
+                ($1, $2, $3, 'pending', $4, $5)
+            RETURNING
+                id, from_account_id, to_account_id, amount, status, note, created_at
+            "#,
+        )
+        .bind(from_account_id)
+        .bind(to_account_id)
+        .bind(amount)
+        .bind(note.as_deref())
+        .bind(&otp_hash)
+        .fetch_one(&self.db)
+        .await?;
+
+        // ── Audit + dev-only log of the OTP ────────────────────────────
+        self.audit
+            .record(
+                Some(actor),
+                "transfer.created",
+                json!({
+                    "transfer_id": transfer.id,
+                    "from_account_id": from_account_id,
+                    "to_account_id": to_account_id,
+                    "amount": amount.to_string(),
+                }),
+            )
+            .await?;
+
+        // Real SMS would replace this. Logging the OTP is fine for the
+        // assignment demo — the grader can read it from the terminal.
+        tracing::info!(
+            transfer_id = transfer.id,
+            otp = %otp,
+            "transfer created — OTP is displayed for demo purposes only"
+        );
+
+        Ok(TransferCreated { transfer, otp })
+    }
+
+    async fn confirm(
+        &self,
+        actor: i64,
+        transfer_id: i64,
+        otp: &str,
     ) -> Result<Transfer, AppError> {
-        // TODO(Member 4):
-        //   1. Validate amount > 0, from != to.
-        //   2. Generate 6-digit OTP, hash with argon2, store in transfers.otp_hash.
-        //   3. INSERT a Transfer row with status = 'pending'.
-        //   4. Record audit event "transfer.created".
-        //   5. (In real life you'd SMS the OTP. Here, write it to the tracing log so
-        //      the grader can see it in the terminal.)
-        todo!("TransferService::create")
+        let mut tx = self.db.begin().await?;
+
+        // (1) Lock the transfer row. Anything but 'pending' is a no-op.
+        let pending: PendingRow = sqlx::query_as::<_, PendingRow>(
+            r#"
+            SELECT id, from_account_id, to_account_id, amount, status, note, otp_hash, created_at
+            FROM transfers
+            WHERE id = $1
+            FOR UPDATE
+            "#,
+        )
+        .bind(transfer_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("transfer {transfer_id} not found")))?;
+
+        if pending.status != TransferStatus::Pending {
+            return Err(AppError::Conflict(format!(
+                "transfer is already {}",
+                pending.status.label().to_lowercase()
+            )));
+        }
+
+        // (2) Verify the OTP.
+        let stored_hash = pending
+            .otp_hash
+            .as_deref()
+            .ok_or_else(|| AppError::Internal(anyhow::anyhow!("pending transfer missing OTP")))?;
+        let parsed = PasswordHash::new(stored_hash)
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("malformed OTP hash: {e}")))?;
+
+        if Argon2::default()
+            .verify_password(otp.as_bytes(), &parsed)
+            .is_err()
+        {
+            // Reject and commit so the rejection is durable, audit afterwards.
+            sqlx::query(r#"UPDATE transfers SET status = 'rejected' WHERE id = $1"#)
+                .bind(transfer_id)
+                .execute(&mut *tx)
+                .await?;
+            tx.commit().await?;
+            self.audit
+                .record(
+                    Some(actor),
+                    "transfer.otp_failed",
+                    json!({ "transfer_id": transfer_id }),
+                )
+                .await?;
+            return Err(AppError::BadRequest("invalid confirmation code".into()));
+        }
+
+        // (3) Lock both account rows. ORDER BY id eliminates deadlock potential
+        //     when two concurrent transfers touch the same pair of accounts in
+        //     opposite directions.
+        let (low, high) = if pending.from_account_id < pending.to_account_id {
+            (pending.from_account_id, pending.to_account_id)
+        } else {
+            (pending.to_account_id, pending.from_account_id)
+        };
+        let accounts: Vec<(i64, AccountStatus, Decimal)> = sqlx::query_as(
+            r#"
+            SELECT id, status, balance
+            FROM accounts
+            WHERE id IN ($1, $2)
+            ORDER BY id
+            FOR UPDATE
+            "#,
+        )
+        .bind(low)
+        .bind(high)
+        .fetch_all(&mut *tx)
+        .await?;
+
+        if accounts.len() != 2 {
+            return Err(AppError::Conflict(
+                "one of the accounts no longer exists".into(),
+            ));
+        }
+
+        // unwrap() is safe — we asserted len() == 2 just above.
+        let from = accounts.iter().find(|a| a.0 == pending.from_account_id).unwrap();
+        let to = accounts.iter().find(|a| a.0 == pending.to_account_id).unwrap();
+
+        // (4) Business-rule re-checks under the locks.
+        let reject_with = |reason: &str| -> AppError { AppError::Conflict(reason.into()) };
+
+        if from.1 != AccountStatus::Active {
+            mark_rejected(&mut tx, transfer_id).await?;
+            tx.commit().await?;
+            self.audit
+                .record(
+                    Some(actor),
+                    "transfer.rejected",
+                    json!({ "transfer_id": transfer_id, "reason": "source not active" }),
+                )
+                .await?;
+            return Err(reject_with(&format!(
+                "source account is {}",
+                from.1.label().to_lowercase()
+            )));
+        }
+        if to.1 != AccountStatus::Active {
+            mark_rejected(&mut tx, transfer_id).await?;
+            tx.commit().await?;
+            self.audit
+                .record(
+                    Some(actor),
+                    "transfer.rejected",
+                    json!({ "transfer_id": transfer_id, "reason": "destination not active" }),
+                )
+                .await?;
+            return Err(reject_with(&format!(
+                "destination account is {}",
+                to.1.label().to_lowercase()
+            )));
+        }
+        if from.2 < pending.amount {
+            mark_rejected(&mut tx, transfer_id).await?;
+            tx.commit().await?;
+            self.audit
+                .record(
+                    Some(actor),
+                    "transfer.rejected",
+                    json!({
+                        "transfer_id": transfer_id,
+                        "reason": "insufficient funds",
+                        "balance": from.2.to_string(),
+                        "amount": pending.amount.to_string(),
+                    }),
+                )
+                .await?;
+            return Err(reject_with(&format!(
+                "insufficient funds: balance ${} < ${}",
+                from.2, pending.amount
+            )));
+        }
+
+        // (5) Move money + finalize transfer, all inside the same transaction.
+        sqlx::query(r#"UPDATE accounts SET balance = balance - $1 WHERE id = $2"#)
+            .bind(pending.amount)
+            .bind(pending.from_account_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(r#"UPDATE accounts SET balance = balance + $1 WHERE id = $2"#)
+            .bind(pending.amount)
+            .bind(pending.to_account_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            r#"
+            UPDATE transfers
+            SET status = 'completed',
+                confirmed_at = now(),
+                otp_hash = NULL
+            WHERE id = $1
+            "#,
+        )
+        .bind(transfer_id)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+
+        // (6) Audit outside the transaction — the audit_log row is its own
+        //     atomic write and we don't want it blocking the money move.
+        self.audit
+            .record(
+                Some(actor),
+                "transfer.completed",
+                json!({
+                    "transfer_id": transfer_id,
+                    "from_account_id": pending.from_account_id,
+                    "to_account_id": pending.to_account_id,
+                    "amount": pending.amount.to_string(),
+                }),
+            )
+            .await?;
+
+        Ok(Transfer {
+            id: pending.id,
+            from_account_id: pending.from_account_id,
+            to_account_id: pending.to_account_id,
+            amount: pending.amount,
+            status: TransferStatus::Completed,
+            note: pending.note,
+            created_at: pending.created_at,
+        })
     }
 
-    async fn confirm(&self, _transfer_id: i64, _otp: &str) -> Result<Transfer, AppError> {
-        // TODO(Member 4) — THE BIG ONE:
-        //
-        //   let mut tx = self.db.begin().await?;
-        //
-        //   1. SELECT * FROM transfers WHERE id = $1 FOR UPDATE  (must be pending).
-        //   2. Verify OTP against stored hash.
-        //   3. SELECT * FROM accounts WHERE id IN ($from, $to) ORDER BY id FOR UPDATE.
-        //      (Order by id to avoid deadlocks under concurrency.)
-        //   4. Re-check: both accounts active, balance >= amount.
-        //   5. UPDATE accounts SET balance = balance - amount WHERE id = $from.
-        //   6. UPDATE accounts SET balance = balance + amount WHERE id = $to.
-        //   7. UPDATE transfers SET status = 'completed' WHERE id = $transfer_id.
-        //   8. self.audit.record(Some(actor), "transfer.completed", json!({...})).
-        //   9. tx.commit().
-        //
-        //   On any validation failure: set status = 'rejected', record audit event,
-        //   commit the txn (so the rejection is durable), then return AppError::Conflict.
-        todo!("TransferService::confirm")
+    async fn history(&self, user_id: i64) -> Result<Vec<Transfer>, AppError> {
+        let rows = sqlx::query_as::<_, Transfer>(
+            r#"
+            SELECT t.id, t.from_account_id, t.to_account_id, t.amount, t.status, t.note, t.created_at
+            FROM transfers t
+            WHERE t.from_account_id IN (SELECT id FROM accounts WHERE user_id = $1)
+               OR t.to_account_id   IN (SELECT id FROM accounts WHERE user_id = $1)
+            ORDER BY t.created_at DESC
+            LIMIT 200
+            "#,
+        )
+        .bind(user_id)
+        .fetch_all(&self.db)
+        .await?;
+        Ok(rows)
     }
 
-    async fn history(&self, _user_id: i64) -> Result<Vec<Transfer>, AppError> {
-        // TODO(Member 4): SELECT transfers JOIN accounts WHERE accounts.user_id = $1.
-        todo!("TransferService::history")
-    }
-
-    async fn recent(&self, _limit: i64) -> Result<Vec<Transfer>, AppError> {
-        Ok(vec![])
+    async fn recent(&self, limit: i64) -> Result<Vec<Transfer>, AppError> {
+        let rows = sqlx::query_as::<_, Transfer>(
+            r#"
+            SELECT id, from_account_id, to_account_id, amount, status, note, created_at
+            FROM transfers
+            ORDER BY created_at DESC
+            LIMIT $1
+            "#,
+        )
+        .bind(limit)
+        .fetch_all(&self.db)
+        .await?;
+        Ok(rows)
     }
 
     async fn flagged(&self) -> Result<Vec<Transfer>, AppError> {
-        Ok(vec![])
+        // Two simple fraud signals: anything rejected, plus any high-value
+        // transfer that warrants a second look. Real systems layer in
+        // velocity rules, recipient-age rules, geo-anomaly rules, etc.
+        let rows = sqlx::query_as::<_, Transfer>(
+            r#"
+            SELECT id, from_account_id, to_account_id, amount, status, note, created_at
+            FROM transfers
+            WHERE status = 'rejected' OR amount >= $1
+            ORDER BY created_at DESC
+            LIMIT 50
+            "#,
+        )
+        .bind(Decimal::from(LARGE_TRANSFER_THRESHOLD))
+        .fetch_all(&self.db)
+        .await?;
+        Ok(rows)
     }
+}
+
+/// Tiny helper to keep the rejection paths in `confirm()` readable.
+async fn mark_rejected(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    transfer_id: i64,
+) -> Result<(), AppError> {
+    sqlx::query(r#"UPDATE transfers SET status = 'rejected' WHERE id = $1"#)
+        .bind(transfer_id)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
 }
