@@ -1,0 +1,87 @@
+{% extends "layout.html" %}
+
+{% block title %}Transfer history · FerroBank{% endblock %}
+
+{% block content %}
+<div class="flex items-end justify-between mb-6 flex-wrap gap-3">
+  <div>
+    <span class="text-xs font-semibold uppercase tracking-wider text-amber-700">Transfers</span>
+    <h1 class="text-3xl font-semibold text-stone-900 mt-1">Your transfers</h1>
+  </div>
+  <a href="/transfers/new"
+     class="px-4 py-2 rounded-md bg-amber-700 text-white text-sm font-medium hover:bg-amber-800 transition">
+    + New transfer
+  </a>
+</div>
+
+<div class="rounded-lg border border-stone-200 bg-white overflow-hidden">
+  {% if transfers.is_empty() %}
+    <div class="p-10 text-center">
+      <div class="text-5xl mb-3">💸</div>
+      <h3 class="font-semibold text-stone-900">No transfers yet</h3>
+      <p class="mt-1 text-sm text-stone-600">Money you send or receive will appear here.</p>
+      <a href="/transfers/new" class="inline-block mt-4 px-4 py-2 rounded-md bg-amber-700 text-white text-sm font-medium hover:bg-amber-800 transition">
+        Send money
+      </a>
+    </div>
+  {% else %}
+    <table class="w-full text-sm">
+      <thead class="bg-stone-50 text-stone-600">
+        <tr class="text-left">
+          <th class="px-4 py-2 font-medium">When</th>
+          <th class="px-4 py-2 font-medium">Direction</th>
+          <th class="px-4 py-2 font-medium">Counterparty</th>
+          <th class="px-4 py-2 font-medium text-right">Amount</th>
+          <th class="px-4 py-2 font-medium">Status</th>
+          <th class="px-4 py-2 font-medium">Note</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-stone-100">
+        {% for t in transfers %}
+          {% if owned_account_ids.contains(t.from_account_id) %}
+            {# Outgoing transfer #}
+            <tr>
+              <td class="px-4 py-3 text-stone-500 whitespace-nowrap">{{ t.created_at.format("%Y-%m-%d %H:%M") }}</td>
+              <td class="px-4 py-3">
+                <span class="text-xs px-2 py-0.5 rounded-full bg-red-50 text-red-700 border border-red-200">Out</span>
+              </td>
+              <td class="px-4 py-3 font-mono text-stone-700">→ #{{ t.to_account_id }}</td>
+              <td class="px-4 py-3 text-right font-mono text-red-700">−${{ t.amount }}</td>
+              <td class="px-4 py-3">
+                {% if t.status == TransferStatus::Completed %}
+                  <span class="text-xs px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">{{ t.status.label() }}</span>
+                {% else if t.status == TransferStatus::Pending %}
+                  <span class="text-xs px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">{{ t.status.label() }}</span>
+                {% else %}
+                  <span class="text-xs px-2 py-0.5 rounded-full bg-stone-100 text-stone-600 border border-stone-200">{{ t.status.label() }}</span>
+                {% endif %}
+              </td>
+              <td class="px-4 py-3 text-stone-600">{% if let Some(n) = t.note %}{{ n }}{% endif %}</td>
+            </tr>
+          {% else %}
+            {# Incoming transfer #}
+            <tr>
+              <td class="px-4 py-3 text-stone-500 whitespace-nowrap">{{ t.created_at.format("%Y-%m-%d %H:%M") }}</td>
+              <td class="px-4 py-3">
+                <span class="text-xs px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">In</span>
+              </td>
+              <td class="px-4 py-3 font-mono text-stone-700">← #{{ t.from_account_id }}</td>
+              <td class="px-4 py-3 text-right font-mono text-emerald-700">+${{ t.amount }}</td>
+              <td class="px-4 py-3">
+                {% if t.status == TransferStatus::Completed %}
+                  <span class="text-xs px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">{{ t.status.label() }}</span>
+                {% else if t.status == TransferStatus::Pending %}
+                  <span class="text-xs px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">{{ t.status.label() }}</span>
+                {% else %}
+                  <span class="text-xs px-2 py-0.5 rounded-full bg-stone-100 text-stone-600 border border-stone-200">{{ t.status.label() }}</span>
+                {% endif %}
+              </td>
+              <td class="px-4 py-3 text-stone-600">{% if let Some(n) = t.note %}{{ n }}{% endif %}</td>
+            </tr>
+          {% endif %}
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+</div>
+{% endblock %}

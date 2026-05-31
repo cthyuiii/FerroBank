@@ -1,0 +1,84 @@
+{% extends "layout.html" %}
+
+{% block title %}Apply for a loan · FerroBank{% endblock %}
+
+{% block content %}
+<section class="max-w-lg mx-auto py-10">
+  <span class="text-xs font-semibold uppercase tracking-wider text-amber-700">Lending</span>
+  <h1 class="text-3xl font-semibold text-stone-900 mt-1">Apply for a loan</h1>
+  <p class="mt-2 text-sm text-stone-600">
+    Tell us how much you want to borrow. Your application will be reviewed by an admin.
+  </p>
+
+  {% if let Some(msg) = error %}
+    <div class="mt-6 p-3 rounded-md bg-red-50 border border-red-200 text-sm text-red-800">
+      {{ msg }}
+    </div>
+  {% endif %}
+
+  <form action="/loans/apply" method="POST" class="mt-6 space-y-4">
+    <div>
+      <label for="principal" class="block text-sm font-medium text-stone-700">Amount to borrow</label>
+      <div class="mt-1 flex">
+        <span class="inline-flex items-center px-3 rounded-l-md border border-r-0 border-stone-300 bg-stone-100 text-stone-600">$</span>
+        <input
+          type="text"
+          id="principal"
+          name="principal"
+          value="{{ principal }}"
+          required
+          inputmode="decimal"
+          pattern="\d+(\.\d{1,2})?"
+          placeholder="5000.00"
+          class="w-full px-3 py-2 rounded-r-md border border-stone-300 bg-white font-mono focus:outline-none focus:ring-2 focus:ring-amber-700 focus:border-amber-700">
+      </div>
+    </div>
+
+    <div>
+      <label for="interest_rate_pct" class="block text-sm font-medium text-stone-700">Annual interest rate</label>
+      <div class="mt-1 flex">
+        <input
+          type="text"
+          id="interest_rate_pct"
+          name="interest_rate_pct"
+          value="{{ interest_rate }}"
+          required
+          inputmode="decimal"
+          pattern="\d+(\.\d{1,4})?"
+          placeholder="5.25"
+          class="w-full px-3 py-2 rounded-l-md border border-stone-300 bg-white font-mono focus:outline-none focus:ring-2 focus:ring-amber-700 focus:border-amber-700">
+        <span class="inline-flex items-center px-3 rounded-r-md border border-l-0 border-stone-300 bg-stone-100 text-stone-600">%</span>
+      </div>
+      <p class="mt-1 text-xs text-stone-500">Enter as a percentage. For 5.25%, type <code class="bg-stone-100 px-1 rounded">5.25</code>.</p>
+    </div>
+
+    <div>
+      <label for="term_months" class="block text-sm font-medium text-stone-700">Term</label>
+      <div class="mt-1 flex">
+        <input
+          type="number"
+          id="term_months"
+          name="term_months"
+          value="{{ term_months }}"
+          required
+          min="1"
+          max="360"
+          step="1"
+          placeholder="36"
+          class="w-full px-3 py-2 rounded-l-md border border-stone-300 bg-white font-mono focus:outline-none focus:ring-2 focus:ring-amber-700 focus:border-amber-700">
+        <span class="inline-flex items-center px-3 rounded-r-md border border-l-0 border-stone-300 bg-stone-100 text-stone-600">months</span>
+      </div>
+      <p class="mt-1 text-xs text-stone-500">Between 1 and 360 months.</p>
+    </div>
+
+    <div class="flex items-center gap-3 pt-2">
+      <button
+        type="submit"
+        class="px-5 py-2.5 rounded-md bg-amber-700 text-white font-medium hover:bg-amber-800 transition">
+        Submit application
+      </button>
+      <a href="/loans" class="text-sm text-stone-600 hover:text-amber-700">Cancel</a>
+    </div>
+  </form>
+</section>
+{% endblock %}

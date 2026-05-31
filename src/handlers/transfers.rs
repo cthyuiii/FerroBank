@@ -18,7 +18,12 @@ use std::str::FromStr;
 use crate::errors::AppError;
 use crate::middleware::auth::CurrentUser;
 use crate::models::account::{Account, AccountStatus};
-use crate::models::transfer::{Transfer, TransferStatus};
+use crate::models::transfer::Transfer;
+// TransferStatus is referenced inside `templates/transfers/history.html`.
+// Askama's derive expansion uses it, but the unused-imports lint runs before
+// macro expansion and would otherwise warn.
+#[allow(unused_imports)]
+use crate::models::transfer::TransferStatus;
 use crate::models::user::Role;
 use crate::services::account_service::AccountService;
 use crate::services::transfer_service::TransferService;
