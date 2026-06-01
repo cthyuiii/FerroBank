@@ -11,7 +11,9 @@ use rust_decimal::Decimal;
 use sqlx::PgPool;
 
 use crate::errors::AppError;
+use crate::models::account::AccountStatus;
 use crate::models::loan::{Loan, LoanStatus, Repayment};
+use crate::models::user::Role;
 
 #[async_trait]
 pub trait LoanService: Send + Sync {
@@ -23,13 +25,29 @@ pub trait LoanService: Send + Sync {
         term_months: i32,
     ) -> Result<Loan, AppError>;
 
-    /// Admin-only.
-    async fn approve(&self, loan_id: i64) -> Result<Loan, AppError>;
+    /// Record one staff approval (teller or admin) for a pending loan. The loan
+    /// only flips to `approved` once it has BOTH a teller approval and an admin
+    /// approval. Because each slot is keyed by role, the two approvals are
+    /// guaranteed to come from two different people.
+    async fn approve(
+        &self,
+        loan_id: i64,
+        approver_id: i64,
+        approver_role: Role,
+    ) -> Result<Loan, AppError>;
 
-    /// Admin-only.
+    /// Staff-only. A single rejection is final.
     async fn reject(&self, loan_id: i64) -> Result<Loan, AppError>;
 
-    async fn record_repayment(&self, loan_id: i64, amount: Decimal) -> Result<Repayment, AppError>;
+    /// `(teller_approved, admin_approved)` for the dual-approval UI.
+    async fn approval_flags(&self, loan_id: i64) -> Result<(bool, bool), AppError>;
+
+    async fn record_repayment(
+        &self,
+        loan_id: i64,
+        amount: Decimal,
+        account_id: i64,
+    ) -> Result<Repayment, AppError>;
     async fn outstanding_balance(&self, loan_id: i64) -> Result<Decimal, AppError>;
     async fn get_by_id(&self, loan_id: i64) -> Result<Loan, AppError>;
     async fn list_for_user(&self, user_id: i64) -> Result<Vec<Loan>, AppError>;
@@ -101,24 +119,114 @@ impl LoanService for PgLoanService {
         Ok(loan)
     }
 
-    async fn approve(&self, loan_id: i64) -> Result<Loan, AppError> {
-        let loan = sqlx::query_as::<_, Loan>(
+    async fn approve(
+        &self,
+        loan_id: i64,
+        approver_id: i64,
+        approver_role: Role,
+    ) -> Result<Loan, AppError> {
+        // Only staff approvals count; the approval slot IS the approver's role.
+        let slot = match approver_role {
+            Role::Admin => Role::Admin,
+            Role::Teller => Role::Teller,
+            Role::Customer => return Err(AppError::Forbidden),
+        };
+
+        let mut tx = self.db.begin().await?;
+
+        // Lock the loan — only a pending loan can collect approvals.
+        let loan: Loan = sqlx::query_as::<_, Loan>(
             r#"
-            UPDATE loans
-            SET status = 'approved', decided_at = now()
-            WHERE id = $1 AND status = 'pending'
-            RETURNING id, user_id, principal, interest_rate, term_months, status, created_at
+            SELECT id, user_id, principal, interest_rate, term_months, status, created_at
+            FROM loans
+            WHERE id = $1
+            FOR UPDATE
             "#,
         )
         .bind(loan_id)
-        .fetch_optional(&self.db)
+        .fetch_optional(&mut *tx)
         .await?
-        .ok_or_else(|| {
-            AppError::Conflict(format!("loan {loan_id} is not pending or does not exist"))
-        })?;
+        .ok_or_else(|| AppError::NotFound(format!("loan {loan_id} not found")))?;
 
-        tracing::info!(loan_id, "loan approved");
-        Ok(loan)
+        if loan.status != LoanStatus::Pending {
+            return Err(AppError::Conflict(format!(
+                "loan {loan_id} is {} and cannot be approved",
+                loan.status.label().to_lowercase()
+            )));
+        }
+
+        // Record this role's approval. UNIQUE(loan_id, role) means a second
+        // approval from the same role is rejected as a no-op.
+        let inserted = sqlx::query(
+            r#"
+            INSERT INTO loan_approvals (loan_id, approver_user_id, role)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (loan_id, role) DO NOTHING
+            "#,
+        )
+        .bind(loan_id)
+        .bind(approver_id)
+        .bind(slot)
+        .execute(&mut *tx)
+        .await?;
+
+        if inserted.rows_affected() == 0 {
+            return Err(AppError::Conflict(
+                "this loan already has an approval from a staff member of your role".into(),
+            ));
+        }
+
+        // Do we now hold BOTH a teller approval and an admin approval?
+        let counts: (i64, i64) = sqlx::query_as(
+            r#"
+            SELECT
+                COUNT(*) FILTER (WHERE role = 'teller'),
+                COUNT(*) FILTER (WHERE role = 'admin')
+            FROM loan_approvals
+            WHERE loan_id = $1
+            "#,
+        )
+        .bind(loan_id)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        let fully_approved = counts.0 > 0 && counts.1 > 0;
+
+        let result = if fully_approved {
+            sqlx::query_as::<_, Loan>(
+                r#"
+                UPDATE loans
+                SET status = 'approved', decided_at = now()
+                WHERE id = $1
+                RETURNING id, user_id, principal, interest_rate, term_months, status, created_at
+                "#,
+            )
+            .bind(loan_id)
+            .fetch_one(&mut *tx)
+            .await?
+        } else {
+            loan
+        };
+
+        tx.commit().await?;
+        tracing::info!(loan_id, ?slot, fully_approved, "loan approval recorded");
+        Ok(result)
+    }
+
+    async fn approval_flags(&self, loan_id: i64) -> Result<(bool, bool), AppError> {
+        let counts: (i64, i64) = sqlx::query_as(
+            r#"
+            SELECT
+                COUNT(*) FILTER (WHERE role = 'teller'),
+                COUNT(*) FILTER (WHERE role = 'admin')
+            FROM loan_approvals
+            WHERE loan_id = $1
+            "#,
+        )
+        .bind(loan_id)
+        .fetch_one(&self.db)
+        .await?;
+        Ok((counts.0 > 0, counts.1 > 0))
     }
 
     async fn reject(&self, loan_id: i64) -> Result<Loan, AppError> {
@@ -145,6 +253,7 @@ impl LoanService for PgLoanService {
         &self,
         loan_id: i64,
         amount: Decimal,
+        account_id: i64,
     ) -> Result<Repayment, AppError> {
         if amount <= Decimal::ZERO {
             return Err(AppError::BadRequest("repayment must be positive".into()));
@@ -174,15 +283,47 @@ impl LoanService for PgLoanService {
             )));
         }
 
+        // Lock the funding account and make sure it can actually cover the
+        // payment. This is what makes a repayment move real money instead of
+        // just writing a ledger row.
+        let funding: (AccountStatus, Decimal) = sqlx::query_as(
+            r#"SELECT status, balance FROM accounts WHERE id = $1 FOR UPDATE"#,
+        )
+        .bind(account_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("account {account_id} not found")))?;
+
+        if funding.0 != AccountStatus::Active {
+            return Err(AppError::Conflict(format!(
+                "funding account is {} and cannot be used",
+                funding.0.label().to_lowercase()
+            )));
+        }
+        if funding.1 < amount {
+            return Err(AppError::Conflict(format!(
+                "insufficient funds: account balance ${} is less than ${}",
+                funding.1, amount
+            )));
+        }
+
+        // Debit the funding account.
+        sqlx::query(r#"UPDATE accounts SET balance = balance - $1 WHERE id = $2"#)
+            .bind(amount)
+            .bind(account_id)
+            .execute(&mut *tx)
+            .await?;
+
         let repayment: Repayment = sqlx::query_as::<_, Repayment>(
             r#"
-            INSERT INTO repayments (loan_id, amount)
-            VALUES ($1, $2)
-            RETURNING id, loan_id, amount, paid_at
+            INSERT INTO repayments (loan_id, amount, account_id)
+            VALUES ($1, $2, $3)
+            RETURNING id, loan_id, amount, account_id, paid_at
             "#,
         )
         .bind(loan_id)
         .bind(amount)
+        .bind(account_id)
         .fetch_one(&mut *tx)
         .await?;
 
@@ -228,7 +369,7 @@ impl LoanService for PgLoanService {
         .fetch_one(&self.db)
         .await?;
         let due = total_due(loan.principal, loan.interest_rate, loan.term_months);
-        Ok((due - paid.0).max(Decimal::ZERO))
+        Ok((due - paid.0).max(Decimal::ZERO).round_dp(2))
     }
 
     async fn get_by_id(&self, loan_id: i64) -> Result<Loan, AppError> {
@@ -263,7 +404,7 @@ impl LoanService for PgLoanService {
     async fn list_repayments(&self, loan_id: i64) -> Result<Vec<Repayment>, AppError> {
         let rows = sqlx::query_as::<_, Repayment>(
             r#"
-            SELECT id, loan_id, amount, paid_at
+            SELECT id, loan_id, amount, account_id, paid_at
             FROM repayments
             WHERE loan_id = $1
             ORDER BY paid_at DESC
@@ -314,6 +455,6 @@ impl LoanService for PgLoanService {
                 (total_due(principal, rate, term) - paid).max(Decimal::ZERO)
             })
             .sum();
-        Ok(total)
+        Ok(total.round_dp(2))
     }
 }

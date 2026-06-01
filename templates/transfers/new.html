@@ -34,11 +34,11 @@
           name="from_account_id"
           required
           class="mt-1 w-full px-3 py-2 rounded-md border border-stone-300 bg-white focus:outline-none focus:ring-2 focus:ring-amber-700 focus:border-amber-700">
-          {% for account in accounts %}
+          {% for opt in accounts %}
             <option
-              value="{{ account.id }}"
-              {% if let Some(selected) = selected_from %}{% if selected == account.id %} selected{% endif %}{% endif %}>
-              {{ account.account_number }} — {{ account.kind.label() }} (${{ account.balance }})
+              value="{{ opt.account.id }}"
+              {% if opt.selected %} selected{% endif %}>
+              {{ opt.account.account_number }} — {{ opt.account.kind.label() }} (${{ opt.account.balance }})
             </option>
           {% endfor %}
         </select>

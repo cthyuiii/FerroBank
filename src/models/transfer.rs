@@ -26,6 +26,16 @@ impl TransferStatus {
             TransferStatus::Rejected => "Rejected",
         }
     }
+
+    /// Tailwind classes for a status pill (used by the admin tables).
+    pub fn badge(&self) -> &'static str {
+        match self {
+            TransferStatus::Completed => "bg-emerald-50 text-emerald-700 border-emerald-200",
+            TransferStatus::Pending => "bg-amber-50 text-amber-700 border-amber-200",
+            TransferStatus::Failed => "bg-stone-100 text-stone-600 border-stone-200",
+            TransferStatus::Rejected => "bg-red-50 text-red-700 border-red-200",
+        }
+    }
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -36,5 +46,8 @@ pub struct Transfer {
     pub amount: Decimal,
     pub status: TransferStatus,
     pub note: Option<String>,
+    /// Human-readable reason a transfer was rejected or flagged (e.g.
+    /// "insufficient funds"). `None` for ordinary completed/pending transfers.
+    pub status_reason: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
 }

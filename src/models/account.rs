@@ -36,6 +36,15 @@ impl AccountStatus {
             AccountStatus::Closed => "Closed",
         }
     }
+
+    /// Tailwind classes for a status pill (used by the admin tables).
+    pub fn badge(&self) -> &'static str {
+        match self {
+            AccountStatus::Active => "bg-emerald-50 text-emerald-700 border-emerald-200",
+            AccountStatus::Frozen => "bg-amber-50 text-amber-700 border-amber-200",
+            AccountStatus::Closed => "bg-stone-100 text-stone-600 border-stone-200",
+        }
+    }
 }
 
 #[derive(Debug, Clone, FromRow)]

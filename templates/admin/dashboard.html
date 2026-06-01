@@ -8,7 +8,11 @@
     <span class="text-xs font-semibold uppercase tracking-wider text-amber-700">Admin</span>
     <h1 class="text-3xl font-semibold text-stone-900 mt-1">Dashboard</h1>
   </div>
-  <a href="/admin/audit" class="text-sm text-stone-600 hover:text-amber-700">View audit log →</a>
+  <nav class="flex items-center gap-4 text-sm">
+    <a href="/admin/accounts" class="text-stone-600 hover:text-amber-700">Accounts</a>
+    <a href="/admin/transfers" class="text-stone-600 hover:text-amber-700">Transfers</a>
+    <a href="/admin/audit" class="text-stone-600 hover:text-amber-700">Audit log →</a>
+  </nav>
 </div>
 
 <!-- KPI cards -->
@@ -84,6 +88,7 @@
           <th class="px-4 py-2 font-medium">From → To</th>
           <th class="px-4 py-2 font-medium text-right">Amount</th>
           <th class="px-4 py-2 font-medium">Status</th>
+          <th class="px-4 py-2 font-medium">Reason</th>
         </tr>
       </thead>
       <tbody class="divide-y divide-red-200">
@@ -93,6 +98,9 @@
             <td class="px-4 py-2">{{ t.from_account_id }} → {{ t.to_account_id }}</td>
             <td class="px-4 py-2 text-right font-mono">${{ t.amount }}</td>
             <td class="px-4 py-2">{{ t.status.label() }}</td>
+            <td class="px-4 py-2 text-red-800">
+              {% if let Some(reason) = t.status_reason %}{{ reason }}{% else %}Large transfer (≥ $10,000){% endif %}
+            </td>
           </tr>
         {% endfor %}
       </tbody>
@@ -127,7 +135,7 @@
               <td class="px-4 py-2 font-mono text-stone-500">#{{ l.id }}</td>
               <td class="px-4 py-2">User #{{ l.user_id }}</td>
               <td class="px-4 py-2 text-right font-mono">${{ l.principal }}</td>
-              <td class="px-4 py-2 text-right font-mono">{{ l.interest_rate }}</td>
+              <td class="px-4 py-2 text-right font-mono">{{ l.rate_pct() }}</td>
               <td class="px-4 py-2 text-right">{{ l.term_months }} mo</td>
               <td class="px-4 py-2 text-right">
                 <a href="/loans/{{ l.id }}" class="text-amber-700 hover:underline">Review</a>

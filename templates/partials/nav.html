@@ -17,6 +17,15 @@
     </nav>
 
     <div class="flex items-center gap-3 text-sm">
+      <button
+        type="button"
+        onclick="fbToggleTheme()"
+        aria-label="Toggle light and dark mode"
+        title="Toggle theme"
+        class="inline-flex items-center justify-center w-9 h-9 rounded-md border border-stone-200 text-stone-600 hover:text-amber-700 hover:border-stone-300 transition">
+        <svg class="fb-icon-moon w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        <svg class="fb-icon-sun w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path stroke-linecap="round" stroke-linejoin="round" d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32 1.41 1.41M2 12h2m16 0h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+      </button>
       {% if let Some(u) = layout.user %}
         <span class="hidden sm:inline text-stone-500">{{ u.email }}</span>
         <span class="text-xs px-2 py-0.5 rounded-full bg-stone-100 text-stone-700 border border-stone-200 capitalize">{{ u.role }}</span>

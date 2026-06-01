@@ -46,8 +46,10 @@ pub fn routes(cfg: &mut web::ServiceConfig) {
 #[template(path = "transfers/new.html")]
 struct NewTemplate {
     layout: LayoutCtx,
-    accounts: Vec<Account>,
-    selected_from: Option<i64>,
+    /// One option per active account, with `selected` pre-computed in the handler
+    /// so the template doesn't need to dereference an Option (Askama's expression
+    /// parser doesn't accept the unary `*` operator).
+    accounts: Vec<AccountOption>,
     error: Option<String>,
     /// Sticky form values so the user doesn't have to retype after a validation miss.
     to_account_number: String,
@@ -55,11 +57,21 @@ struct NewTemplate {
     note: String,
 }
 
+/// Render-side wrapper for one item in the from-account dropdown.
+struct AccountOption {
+    account: Account,
+    selected: bool,
+}
+
 #[derive(Template)]
 #[template(path = "transfers/confirm.html")]
 struct ConfirmTemplate {
     layout: LayoutCtx,
     transfer: Transfer,
+    /// Recipient account number (as typed) and resolved owner name, so the
+    /// sender can verify who they're paying before confirming.
+    to_account_number: String,
+    to_owner_name: String,
     /// Demo only. Real system would send this by SMS.
     demo_otp: String,
 }
@@ -122,17 +134,21 @@ async fn new_form(
     account_svc: web::Data<dyn AccountService>,
     user: CurrentUser,
 ) -> Result<HttpResponse, AppError> {
-    let accounts: Vec<Account> = account_svc
+    let selected = query.from;
+    let accounts: Vec<AccountOption> = account_svc
         .list_for_user(user.id)
         .await?
         .into_iter()
         .filter(|a| a.status == AccountStatus::Active)
+        .map(|a| AccountOption {
+            selected: selected == Some(a.id),
+            account: a,
+        })
         .collect();
 
     render(NewTemplate {
         layout: LayoutCtx::from_user(Some(&user)),
         accounts,
-        selected_from: query.from,
         error: None,
         to_account_number: String::new(),
         amount: String::new(),
@@ -156,16 +172,20 @@ async fn create(
         form: &NewTransferForm,
         msg: String,
     ) -> Result<HttpResponse, AppError> {
-        let accounts: Vec<Account> = account_svc
+        let selected_id = form.from_account_id;
+        let accounts: Vec<AccountOption> = account_svc
             .list_for_user(user.id)
             .await?
             .into_iter()
             .filter(|a| a.status == AccountStatus::Active)
+            .map(|a| AccountOption {
+                selected: a.id == selected_id,
+                account: a,
+            })
             .collect();
         render(NewTemplate {
             layout: LayoutCtx::from_user(Some(user)),
             accounts,
-            selected_from: Some(form.from_account_id),
             error: Some(msg),
             to_account_number: form.to_account_number.clone(),
             amount: form.amount.clone(),
@@ -210,6 +230,19 @@ async fn create(
         }
     };
 
+    // Resolve the recipient's name so the confirm page can show who's being paid.
+    let to_owner_name: String = sqlx::query_scalar(
+        r#"
+        SELECT u.full_name
+        FROM users u
+        JOIN accounts a ON a.user_id = u.id
+        WHERE a.id = $1
+        "#,
+    )
+    .bind(to_id)
+    .fetch_one(&state.db)
+    .await?;
+
     // Hand off to the service. It enforces amount > 0, from != to, rate limit,
     // and inserts the pending row with an OTP.
     let created = match svc
@@ -229,6 +262,8 @@ async fn create(
     render(ConfirmTemplate {
         layout: LayoutCtx::from_user(Some(&user)),
         transfer: created.transfer,
+        to_account_number: to_account_number.to_string(),
+        to_owner_name,
         demo_otp: created.otp,
     })
 }

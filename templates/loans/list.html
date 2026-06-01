@@ -63,7 +63,7 @@
             <td class="px-4 py-3 font-mono text-stone-500">#{{ loan.id }}</td>
             {% if staff_view %}<td class="px-4 py-3 text-stone-700">User #{{ loan.user_id }}</td>{% endif %}
             <td class="px-4 py-3 text-right font-mono">${{ loan.principal }}</td>
-            <td class="px-4 py-3 text-right font-mono">{{ loan.interest_rate }}</td>
+            <td class="px-4 py-3 text-right font-mono">{{ loan.rate_pct() }}</td>
             <td class="px-4 py-3 text-right">{{ loan.term_months }} mo</td>
             <td class="px-4 py-3">
               {% if loan.status == LoanStatus::Pending %}

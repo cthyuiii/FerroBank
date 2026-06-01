@@ -20,14 +20,16 @@ use crate::services::auth_service::AuthService;
 use crate::view::LayoutCtx;
 
 pub fn routes(cfg: &mut web::ServiceConfig) {
-    cfg.service(
-        web::scope("")
-            .route("/login", web::get().to(login_form))
-            .route("/login", web::post().to(login_submit))
-            .route("/register", web::get().to(register_form))
-            .route("/register", web::post().to(register_submit))
-            .route("/logout", web::post().to(logout)),
-    );
+    // NOTE: register these as plain top-level resources — do NOT wrap them in
+    // `web::scope("")`. An empty-prefix scope matches *every* request path, and
+    // because services are matched in registration order it would swallow the
+    // later `/accounts`, `/transfers`, `/loans`, and `/admin` scopes and return
+    // 404 for them (e.g. the post-login redirect to `/accounts`).
+    cfg.route("/login", web::get().to(login_form))
+        .route("/login", web::post().to(login_submit))
+        .route("/register", web::get().to(register_form))
+        .route("/register", web::post().to(register_submit))
+        .route("/logout", web::post().to(logout));
 }
 
 // ── Templates ────────────────────────────────────────────────────────

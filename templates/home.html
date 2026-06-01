@@ -8,12 +8,12 @@
     <span class="inline-block text-xs font-semibold uppercase tracking-wider text-amber-700 mb-3">FerroBank</span>
     <h1 class="text-4xl sm:text-5xl font-semibold tracking-tight text-stone-900 leading-tight">
       Iron-clad core banking,<br>
-      <span class="text-amber-700">built in Rust.</span>
+      <span class="text-amber-700">built for trust.</span>
     </h1>
     <p class="mt-6 text-lg text-stone-600 leading-relaxed">
-      Open accounts, move money safely, take out loans, and audit every transaction —
-      on top of a type-safe, concurrency-correct backend. A reference implementation
-      for the SIT Web Programming module.
+      Open accounts, move money safely, take out loans, and see every transaction
+      in a clear audit trail — all from one secure place. Banking that's simple
+      for you and accountable by design.
     </p>
 
     <div class="mt-8 flex flex-wrap gap-3">
@@ -34,7 +34,7 @@
   </div>
   <div class="p-5 rounded-lg border border-stone-200 bg-white hover:border-amber-700 transition">
     <h3 class="font-semibold text-stone-900">Transfers</h3>
-    <p class="mt-2 text-sm text-stone-600 leading-relaxed">ACID money movement with OTP confirmation and audit trail.</p>
+    <p class="mt-2 text-sm text-stone-600 leading-relaxed">Reliable money movement with OTP confirmation and a full audit trail.</p>
   </div>
   <div class="p-5 rounded-lg border border-stone-200 bg-white hover:border-amber-700 transition">
     <h3 class="font-semibold text-stone-900">Loans</h3>
@@ -42,16 +42,31 @@
   </div>
   <div class="p-5 rounded-lg border border-stone-200 bg-white hover:border-amber-700 transition">
     <h3 class="font-semibold text-stone-900">Admin</h3>
-    <p class="mt-2 text-sm text-stone-600 leading-relaxed">Cross-module dashboards for staff, with role-based access.</p>
+    <p class="mt-2 text-sm text-stone-600 leading-relaxed">Cross-team dashboards for staff, with role-based access.</p>
   </div>
 </section>
 
-<section class="mt-12 p-6 rounded-lg bg-stone-100 border border-stone-200">
-  <h3 class="font-semibold text-stone-900">For developers</h3>
-  <p class="mt-2 text-sm text-stone-600 leading-relaxed">
-    Built with Actix Web 4, Askama, SQLx, PostgreSQL, argon2, and rust_decimal. See
-    <code class="bg-white px-1.5 py-0.5 rounded border border-stone-200">ARCHITECTURE.md</code>
-    for the layered design and module boundaries.
-  </p>
+<section class="mt-12 grid sm:grid-cols-3 gap-4">
+  <div class="p-6 rounded-lg bg-stone-100 border border-stone-200">
+    <div class="flex items-center gap-2 text-amber-700">
+      <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 3l7 4v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V7l7-4z"/></svg>
+      <h3 class="font-semibold text-stone-900">Secure by design</h3>
+    </div>
+    <p class="mt-2 text-sm text-stone-600 leading-relaxed">Strong password hashing, encrypted sessions, and role-based access on every page.</p>
+  </div>
+  <div class="p-6 rounded-lg bg-stone-100 border border-stone-200">
+    <div class="flex items-center gap-2 text-amber-700">
+      <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 1 1-18 0 9 9 0 0 1 18 0z"/></svg>
+      <h3 class="font-semibold text-stone-900">Always accountable</h3>
+    </div>
+    <p class="mt-2 text-sm text-stone-600 leading-relaxed">Every transfer, loan, and account change is recorded in an immutable audit log.</p>
+  </div>
+  <div class="p-6 rounded-lg bg-stone-100 border border-stone-200">
+    <div class="flex items-center gap-2 text-amber-700">
+      <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 2L3 14h7l-1 8 10-12h-7l1-8z"/></svg>
+      <h3 class="font-semibold text-stone-900">Fast and dependable</h3>
+    </div>
+    <p class="mt-2 text-sm text-stone-600 leading-relaxed">Consistent, accurate balances you can rely on, even under heavy concurrent use.</p>
+  </div>
 </section>
 {% endblock %}

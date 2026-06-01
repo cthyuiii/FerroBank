@@ -55,6 +55,9 @@
                 {% else %}
                   <span class="text-xs px-2 py-0.5 rounded-full bg-stone-100 text-stone-600 border border-stone-200">{{ t.status.label() }}</span>
                 {% endif %}
+                {% if let Some(reason) = t.status_reason %}
+                  <div class="text-xs text-red-700 mt-1">{{ reason }}</div>
+                {% endif %}
               </td>
               <td class="px-4 py-3 text-stone-600">{% if let Some(n) = t.note %}{{ n }}{% endif %}</td>
             </tr>
@@ -74,6 +77,9 @@
                   <span class="text-xs px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">{{ t.status.label() }}</span>
                 {% else %}
                   <span class="text-xs px-2 py-0.5 rounded-full bg-stone-100 text-stone-600 border border-stone-200">{{ t.status.label() }}</span>
+                {% endif %}
+                {% if let Some(reason) = t.status_reason %}
+                  <div class="text-xs text-red-700 mt-1">{{ reason }}</div>
                 {% endif %}
               </td>
               <td class="px-4 py-3 text-stone-600">{% if let Some(n) = t.note %}{{ n }}{% endif %}</td>

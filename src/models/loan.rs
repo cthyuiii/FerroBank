@@ -38,10 +38,21 @@ pub struct Loan {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
+impl Loan {
+    /// Annual interest rate rendered as a percentage string, e.g. `0.0525` → `"5.25%"`.
+    /// Templates call this so the UI never shows a raw 4-decimal fraction.
+    pub fn rate_pct(&self) -> String {
+        let pct = (self.interest_rate * Decimal::from(100)).round_dp(2).normalize();
+        format!("{pct}%")
+    }
+}
+
 #[derive(Debug, Clone, FromRow)]
 pub struct Repayment {
     pub id: i64,
     pub loan_id: i64,
     pub amount: Decimal,
+    /// Account the repayment was drawn from. `None` for legacy/seed rows.
+    pub account_id: Option<i64>,
     pub paid_at: chrono::DateTime<chrono::Utc>,
 }

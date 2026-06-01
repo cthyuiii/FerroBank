@@ -13,6 +13,12 @@ pub trait AccountService: Send + Sync {
     async fn open_account(&self, user_id: i64, kind: AccountType) -> Result<Account, AppError>;
     async fn close_account(&self, account_id: i64) -> Result<(), AppError>;
     async fn freeze_account(&self, account_id: i64) -> Result<(), AppError>;
+    /// Staff action: return a frozen account to active.
+    async fn unfreeze_account(&self, account_id: i64) -> Result<(), AppError>;
+    /// Staff action: apply a signed manual adjustment (credit if positive,
+    /// debit if negative). Returns the new balance. Rejects a debit that would
+    /// push the balance negative.
+    async fn adjust_balance(&self, account_id: i64, delta: Decimal) -> Result<Decimal, AppError>;
     async fn get_balance(&self, account_id: i64) -> Result<Decimal, AppError>;
     async fn get_by_id(&self, account_id: i64) -> Result<Account, AppError>;
     async fn list_for_user(&self, user_id: i64) -> Result<Vec<Account>, AppError>;
@@ -126,6 +132,57 @@ impl AccountService for PgAccountService {
 
         tracing::info!(account_id, "froze account");
         Ok(())
+    }
+
+    async fn unfreeze_account(&self, account_id: i64) -> Result<(), AppError> {
+        let rows = sqlx::query(
+            r#"UPDATE accounts SET status = 'active' WHERE id = $1 AND status = 'frozen'"#,
+        )
+        .bind(account_id)
+        .execute(&self.db)
+        .await?;
+
+        if rows.rows_affected() == 0 {
+            return Err(AppError::Conflict(
+                "account is not frozen and cannot be unfrozen".into(),
+            ));
+        }
+
+        tracing::info!(account_id, "unfroze account");
+        Ok(())
+    }
+
+    async fn adjust_balance(&self, account_id: i64, delta: Decimal) -> Result<Decimal, AppError> {
+        if delta == Decimal::ZERO {
+            return Err(AppError::BadRequest("adjustment cannot be zero".into()));
+        }
+
+        let mut tx = self.db.begin().await?;
+
+        let current: (Decimal,) =
+            sqlx::query_as(r#"SELECT balance FROM accounts WHERE id = $1 FOR UPDATE"#)
+                .bind(account_id)
+                .fetch_optional(&mut *tx)
+                .await?
+                .ok_or_else(|| AppError::NotFound(format!("account {account_id} not found")))?;
+
+        let new_balance = current.0 + delta;
+        if new_balance < Decimal::ZERO {
+            return Err(AppError::Conflict(format!(
+                "adjustment would make the balance negative (${} + ${})",
+                current.0, delta
+            )));
+        }
+
+        sqlx::query(r#"UPDATE accounts SET balance = $1 WHERE id = $2"#)
+            .bind(new_balance)
+            .bind(account_id)
+            .execute(&mut *tx)
+            .await?;
+
+        tx.commit().await?;
+        tracing::info!(account_id, %delta, %new_balance, "balance adjusted");
+        Ok(new_balance)
     }
 
     async fn get_balance(&self, account_id: i64) -> Result<Decimal, AppError> {

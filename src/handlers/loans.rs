@@ -17,8 +17,10 @@ use std::str::FromStr;
 
 use crate::errors::AppError;
 use crate::middleware::auth::CurrentUser;
+use crate::models::account::{Account, AccountStatus};
 use crate::models::loan::{Loan, LoanStatus, Repayment};
 use crate::models::user::Role;
+use crate::services::account_service::AccountService;
 use crate::services::loan_service::LoanService;
 use crate::view::LayoutCtx;
 
@@ -65,8 +67,15 @@ struct DetailTemplate {
     outstanding: Decimal,
     total_due: Decimal,
     repayments: Vec<Repayment>,
+    /// Active accounts the borrower can pay from (only populated for the owner).
+    repay_accounts: Vec<Account>,
     can_repay: bool,
+    /// Whether THIS staff viewer can still record an approval for their role.
     can_decide: bool,
+    /// Dual-approval progress, shown to staff.
+    teller_approved: bool,
+    admin_approved: bool,
+    is_staff: bool,
 }
 
 // ── Form payloads ────────────────────────────────────────────────────
@@ -82,6 +91,7 @@ struct ApplyForm {
 #[derive(Debug, Deserialize)]
 struct RepayForm {
     amount: String,
+    account_id: i64,
 }
 
 // ── Handlers ─────────────────────────────────────────────────────────
@@ -158,6 +168,7 @@ async fn apply_submit(
 async fn detail(
     path: web::Path<i64>,
     svc: web::Data<dyn LoanService>,
+    account_svc: web::Data<dyn AccountService>,
     user: CurrentUser,
 ) -> Result<HttpResponse, AppError> {
     let loan_id = path.into_inner();
@@ -172,11 +183,34 @@ async fn detail(
     let repayments = svc.list_repayments(loan_id).await?;
 
     let months_factor = Decimal::from(loan.term_months) / Decimal::from(12);
-    let total_due = loan.principal + loan.principal * loan.interest_rate * months_factor;
+    let total_due =
+        (loan.principal + loan.principal * loan.interest_rate * months_factor).round_dp(2);
 
     let can_repay = (loan.status == LoanStatus::Approved || loan.status == LoanStatus::Active)
         && loan.user_id == user.id;
-    let can_decide = user.role == Role::Admin && loan.status == LoanStatus::Pending;
+
+    // Funding accounts for the repay form — only the borrower needs them.
+    let repay_accounts: Vec<Account> = if can_repay {
+        account_svc
+            .list_for_user(user.id)
+            .await?
+            .into_iter()
+            .filter(|a| a.status == AccountStatus::Active)
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    // Dual-approval state.
+    let (teller_approved, admin_approved) = svc.approval_flags(loan_id).await?;
+    let is_staff = user.role != Role::Customer;
+    let already_approved_this_role = match user.role {
+        Role::Admin => admin_approved,
+        Role::Teller => teller_approved,
+        Role::Customer => true, // customers never decide
+    };
+    let can_decide =
+        is_staff && loan.status == LoanStatus::Pending && !already_approved_this_role;
 
     render(DetailTemplate {
         layout: LayoutCtx::from_user(Some(&user)),
@@ -184,8 +218,12 @@ async fn detail(
         outstanding,
         total_due,
         repayments,
+        repay_accounts,
         can_repay,
         can_decide,
+        teller_approved,
+        admin_approved,
+        is_staff,
     })
 }
 
@@ -193,6 +231,7 @@ async fn repay(
     path: web::Path<i64>,
     form: web::Form<RepayForm>,
     svc: web::Data<dyn LoanService>,
+    account_svc: web::Data<dyn AccountService>,
     user: CurrentUser,
 ) -> Result<HttpResponse, AppError> {
     let loan_id = path.into_inner();
@@ -203,10 +242,16 @@ async fn repay(
         return Err(AppError::Forbidden);
     }
 
+    // The funding account must belong to the borrower.
+    let account = account_svc.get_by_id(form.account_id).await?;
+    if account.user_id != user.id {
+        return Err(AppError::Forbidden);
+    }
+
     let amount = Decimal::from_str(form.amount.trim())
         .map_err(|_| AppError::BadRequest("repayment must be a number".into()))?;
 
-    svc.record_repayment(loan_id, amount).await?;
+    svc.record_repayment(loan_id, amount, form.account_id).await?;
 
     Ok(HttpResponse::Found()
         .insert_header(("Location", format!("/loans/{loan_id}")))
@@ -218,11 +263,13 @@ async fn approve(
     svc: web::Data<dyn LoanService>,
     user: CurrentUser,
 ) -> Result<HttpResponse, AppError> {
-    if user.role != Role::Admin {
+    // Both tellers and admins may record an approval; the service enforces that
+    // one of each (two distinct people) is required before the loan is approved.
+    if user.role == Role::Customer {
         return Err(AppError::Forbidden);
     }
     let loan_id = path.into_inner();
-    svc.approve(loan_id).await?;
+    svc.approve(loan_id, user.id, user.role).await?;
 
     Ok(HttpResponse::Found()
         .insert_header(("Location", format!("/loans/{loan_id}")))
@@ -234,7 +281,8 @@ async fn reject(
     svc: web::Data<dyn LoanService>,
     user: CurrentUser,
 ) -> Result<HttpResponse, AppError> {
-    if user.role != Role::Admin {
+    // Either staff role can reject a pending application.
+    if user.role == Role::Customer {
         return Err(AppError::Forbidden);
     }
     let loan_id = path.into_inner();

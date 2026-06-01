@@ -4,6 +4,7 @@ use actix_web::{web, HttpResponse};
 use askama::Template;
 
 use crate::errors::AppError;
+use crate::middleware::auth::CurrentUser;
 use crate::view::LayoutCtx;
 
 pub fn routes(cfg: &mut web::ServiceConfig) {
@@ -16,9 +17,12 @@ struct HomeTemplate {
     layout: LayoutCtx,
 }
 
-async fn home() -> Result<HttpResponse, AppError> {
+// `Option<CurrentUser>` resolves to `None` for anonymous visitors and to the
+// logged-in user otherwise, so the landing page reflects session state in the
+// nav instead of always rendering the signed-out view.
+async fn home(user: Option<CurrentUser>) -> Result<HttpResponse, AppError> {
     let body = HomeTemplate {
-        layout: LayoutCtx::anonymous(),
+        layout: LayoutCtx::from_user(user.as_ref()),
     }
     .render()
     .map_err(|e| AppError::Internal(anyhow::anyhow!("home template: {e}")))?;

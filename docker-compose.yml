@@ -17,5 +17,45 @@ services:
       timeout: 3s
       retries: 10
 
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ferrobank-app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # Reach Postgres via the compose service name, NOT localhost.
+      DATABASE_URL: postgres://ferrobank:ferrobank@db:5432/ferrobank
+      APP_HOST: 0.0.0.0
+      APP_PORT: "8080"
+      # Generate your own with: openssl rand -base64 64
+      SESSION_SECRET: ${SESSION_SECRET:-please-set-SESSION_SECRET-in-your-shell-or-an-env-file-of-at-least-64-bytes-thanks}
+      RUST_LOG: ferrobank=info,actix_web=info,sqlx=warn
+    ports:
+      - "8080:8080"
+
+  # One-shot seed runner. Runs automatically as part of `docker compose up`:
+  # it waits for the database to be healthy, applies migrations itself, inserts
+  # the demo data, then exits. It is idempotent, so it is safe on every `up`.
+  #
+  # Don't want demo data (e.g. in production)? Re-add `profiles: ["seed"]` below
+  # so it only runs when you ask for it explicitly with `docker compose run seed`.
+  seed:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://ferrobank:ferrobank@db:5432/ferrobank
+      SESSION_SECRET: ${SESSION_SECRET:-please-set-SESSION_SECRET-in-your-shell-or-an-env-file-of-at-least-64-bytes-thanks}
+      RUST_LOG: ferrobank=info
+    command: ["seed"]
+
 volumes:
   ferrobank_pg:

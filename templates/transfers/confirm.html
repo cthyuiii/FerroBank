@@ -18,7 +18,10 @@
     </div>
     <div class="flex items-center justify-between">
       <span class="text-sm text-stone-500">To account</span>
-      <span class="font-mono text-stone-900">#{{ transfer.to_account_id }}</span>
+      <span class="text-right">
+        <span class="block font-mono text-stone-900">{{ to_account_number }}</span>
+        <span class="block text-xs text-stone-500">{{ to_owner_name }}</span>
+      </span>
     </div>
     <div class="flex items-center justify-between pt-2 border-t border-stone-100">
       <span class="text-sm text-stone-500">Amount</span>

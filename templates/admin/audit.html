@@ -11,6 +11,17 @@
   <a href="/admin/dashboard" class="text-sm text-stone-600 hover:text-amber-700">← Dashboard</a>
 </div>
 
+{% if !entries.is_empty() %}
+<div class="mb-4">
+  <input
+    type="search"
+    id="auditSearch"
+    placeholder="Search by actor, event, or payload…"
+    oninput="fbFilterTable('auditSearch', 'auditRows', 'auditEmpty')"
+    class="w-full sm:max-w-md px-3 py-2 rounded-md border border-stone-300 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-amber-700 focus:border-amber-700">
+</div>
+{% endif %}
+
 <div class="rounded-lg border border-stone-200 bg-white overflow-hidden">
   {% if entries.is_empty() %}
     <div class="p-6 text-sm text-stone-500 text-center">No audit entries recorded yet.</div>
@@ -24,7 +35,7 @@
           <th class="px-4 py-2 font-medium">Payload</th>
         </tr>
       </thead>
-      <tbody class="divide-y divide-stone-100 align-top">
+      <tbody id="auditRows" class="divide-y divide-stone-100 align-top">
         {% for entry in entries %}
           <tr>
             <td class="px-4 py-2 text-stone-500 whitespace-nowrap">{{ entry.created_at.format("%Y-%m-%d %H:%M:%S") }}</td>
@@ -39,6 +50,7 @@
         {% endfor %}
       </tbody>
     </table>
+    <div id="auditEmpty" class="hidden p-6 text-sm text-stone-500 text-center">No entries match your search.</div>
   {% endif %}
 </div>
 {% endblock %}

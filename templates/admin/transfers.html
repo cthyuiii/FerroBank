@@ -1,0 +1,73 @@
+{% extends "layout.html" %}
+
+{% block title %}All transfers · Admin · FerroBank{% endblock %}
+
+{% block content %}
+<div class="flex items-center justify-between mb-6 flex-wrap gap-3">
+  <div>
+    <span class="text-xs font-semibold uppercase tracking-wider text-amber-700">Admin</span>
+    <h1 class="text-3xl font-semibold text-stone-900 mt-1">All transfers</h1>
+    <p class="mt-1 text-sm text-stone-600">{{ transfers.len() }} most recent transfers.</p>
+  </div>
+  <nav class="flex items-center gap-4 text-sm">
+    <a href="/admin/dashboard" class="text-stone-600 hover:text-amber-700">← Dashboard</a>
+    <a href="/admin/accounts" class="text-stone-600 hover:text-amber-700">Accounts</a>
+  </nav>
+</div>
+
+<!-- Search -->
+<div class="mb-4">
+  <input
+    type="search"
+    id="txSearch"
+    placeholder="Search by party, account number, status, or reason…"
+    oninput="fbFilterTable('txSearch', 'txRows', 'txEmpty')"
+    class="w-full sm:max-w-md px-3 py-2 rounded-md border border-stone-300 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-amber-700 focus:border-amber-700">
+</div>
+
+<div class="rounded-lg border border-stone-200 bg-white overflow-hidden">
+  {% if transfers.is_empty() %}
+    <div class="p-6 text-sm text-stone-500 text-center">No transfers yet.</div>
+  {% else %}
+    <table class="w-full text-sm">
+      <thead class="bg-stone-50 text-stone-600">
+        <tr class="text-left">
+          <th class="px-4 py-2 font-medium">When</th>
+          <th class="px-4 py-2 font-medium">From</th>
+          <th class="px-4 py-2 font-medium">To</th>
+          <th class="px-4 py-2 font-medium text-right">Amount</th>
+          <th class="px-4 py-2 font-medium">Status</th>
+          <th class="px-4 py-2 font-medium">Reason / flag</th>
+        </tr>
+      </thead>
+      <tbody id="txRows" class="divide-y divide-stone-100 align-top">
+        {% for t in transfers %}
+          <tr>
+            <td class="px-4 py-3 text-stone-500 whitespace-nowrap">{{ t.created_at.format("%Y-%m-%d %H:%M") }}</td>
+            <td class="px-4 py-3">
+              <div class="text-stone-900">{{ t.from_owner }}</div>
+              <div class="text-xs font-mono text-stone-500">#{{ t.from_account_id }} · {{ t.from_number }}</div>
+            </td>
+            <td class="px-4 py-3">
+              <div class="text-stone-900">{{ t.to_owner }}</div>
+              <div class="text-xs font-mono text-stone-500">#{{ t.to_account_id }} · {{ t.to_number }}</div>
+            </td>
+            <td class="px-4 py-3 text-right font-mono text-stone-900">${{ t.amount }}</td>
+            <td class="px-4 py-3">
+              <span class="text-xs px-2 py-0.5 rounded-full border {{ t.status.badge() }}">{{ t.status.label() }}</span>
+            </td>
+            <td class="px-4 py-3 text-stone-600">
+              {% if let Some(reason) = t.flag_reason() %}
+                <span class="text-red-700">{{ reason }}</span>
+              {% else %}
+                <span class="text-stone-400">—</span>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <div id="txEmpty" class="hidden p-6 text-sm text-stone-500 text-center">No transfers match your search.</div>
+  {% endif %}
+</div>
+{% endblock %}

@@ -173,7 +173,7 @@ impl TransferService for PgTransferService {
             VALUES
                 ($1, $2, $3, 'pending', $4, $5)
             RETURNING
-                id, from_account_id, to_account_id, amount, status, note, created_at
+                id, from_account_id, to_account_id, amount, status, note, status_reason, created_at
             "#,
         )
         .bind(from_account_id)
@@ -251,10 +251,7 @@ impl TransferService for PgTransferService {
             .is_err()
         {
             // Reject and commit so the rejection is durable, audit afterwards.
-            sqlx::query(r#"UPDATE transfers SET status = 'rejected' WHERE id = $1"#)
-                .bind(transfer_id)
-                .execute(&mut *tx)
-                .await?;
+            mark_rejected(&mut tx, transfer_id, "invalid one-time confirmation code").await?;
             tx.commit().await?;
             self.audit
                 .record(
@@ -302,7 +299,8 @@ impl TransferService for PgTransferService {
         let reject_with = |reason: &str| -> AppError { AppError::Conflict(reason.into()) };
 
         if from.1 != AccountStatus::Active {
-            mark_rejected(&mut tx, transfer_id).await?;
+            let reason = format!("source account is {}", from.1.label().to_lowercase());
+            mark_rejected(&mut tx, transfer_id, &reason).await?;
             tx.commit().await?;
             self.audit
                 .record(
@@ -317,7 +315,8 @@ impl TransferService for PgTransferService {
             )));
         }
         if to.1 != AccountStatus::Active {
-            mark_rejected(&mut tx, transfer_id).await?;
+            let reason = format!("destination account is {}", to.1.label().to_lowercase());
+            mark_rejected(&mut tx, transfer_id, &reason).await?;
             tx.commit().await?;
             self.audit
                 .record(
@@ -332,7 +331,11 @@ impl TransferService for PgTransferService {
             )));
         }
         if from.2 < pending.amount {
-            mark_rejected(&mut tx, transfer_id).await?;
+            let reason = format!(
+                "insufficient funds: balance ${} is less than ${}",
+                from.2, pending.amount
+            );
+            mark_rejected(&mut tx, transfer_id, &reason).await?;
             tx.commit().await?;
             self.audit
                 .record(
@@ -400,6 +403,7 @@ impl TransferService for PgTransferService {
             amount: pending.amount,
             status: TransferStatus::Completed,
             note: pending.note,
+            status_reason: None,
             created_at: pending.created_at,
         })
     }
@@ -407,7 +411,7 @@ impl TransferService for PgTransferService {
     async fn history(&self, user_id: i64) -> Result<Vec<Transfer>, AppError> {
         let rows = sqlx::query_as::<_, Transfer>(
             r#"
-            SELECT t.id, t.from_account_id, t.to_account_id, t.amount, t.status, t.note, t.created_at
+            SELECT t.id, t.from_account_id, t.to_account_id, t.amount, t.status, t.note, t.status_reason, t.created_at
             FROM transfers t
             WHERE t.from_account_id IN (SELECT id FROM accounts WHERE user_id = $1)
                OR t.to_account_id   IN (SELECT id FROM accounts WHERE user_id = $1)
@@ -424,7 +428,7 @@ impl TransferService for PgTransferService {
     async fn recent(&self, limit: i64) -> Result<Vec<Transfer>, AppError> {
         let rows = sqlx::query_as::<_, Transfer>(
             r#"
-            SELECT id, from_account_id, to_account_id, amount, status, note, created_at
+            SELECT id, from_account_id, to_account_id, amount, status, note, status_reason, created_at
             FROM transfers
             ORDER BY created_at DESC
             LIMIT $1
@@ -442,7 +446,7 @@ impl TransferService for PgTransferService {
         // velocity rules, recipient-age rules, geo-anomaly rules, etc.
         let rows = sqlx::query_as::<_, Transfer>(
             r#"
-            SELECT id, from_account_id, to_account_id, amount, status, note, created_at
+            SELECT id, from_account_id, to_account_id, amount, status, note, status_reason, created_at
             FROM transfers
             WHERE status = 'rejected' OR amount >= $1
             ORDER BY created_at DESC
@@ -456,13 +460,16 @@ impl TransferService for PgTransferService {
     }
 }
 
-/// Tiny helper to keep the rejection paths in `confirm()` readable.
+/// Tiny helper to keep the rejection paths in `confirm()` readable. Records the
+/// human-readable reason alongside the status so the UI can explain the failure.
 async fn mark_rejected(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     transfer_id: i64,
+    reason: &str,
 ) -> Result<(), AppError> {
-    sqlx::query(r#"UPDATE transfers SET status = 'rejected' WHERE id = $1"#)
+    sqlx::query(r#"UPDATE transfers SET status = 'rejected', status_reason = $2 WHERE id = $1"#)
         .bind(transfer_id)
+        .bind(reason)
         .execute(&mut **tx)
         .await?;
     Ok(())
