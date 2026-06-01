@@ -45,122 +45,133 @@ See **[TEAM_CHARTER.md](./TEAM_CHARTER.md)** for each member's group baseline an
 
 ---
 
-## Quick start
+## Running FerroBank
 
-Pick the section that matches your OS — the steps are otherwise identical.
+There are two supported ways to run the project. Both serve the app at
+<http://localhost:8080>.
 
-### macOS
+- **Docker (recommended)** — one command builds and starts Postgres, the app,
+  and the demo data. No Rust toolchain required.
+- **Local (`cargo`)** — run the app directly with Cargo against a Postgres
+  container. Best for active Rust development and fast rebuilds.
 
-#### One-time install
+### Prerequisites
 
-```bash
-# Rust toolchain (skip if you already have it)
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source "$HOME/.cargo/env"
+| Tool | Docker run | Local run |
+|---|---|---|
+| Docker Desktop | required | required (for Postgres) |
+| Rust toolchain (rustup) | not needed | required |
+| SQLx CLI | not needed | optional (only to author new migrations) |
 
-# Docker Desktop (provides the Postgres container)
-brew install --cask docker
-open -a Docker            # launch once so the daemon starts
-
-# SQLx CLI for migrations
-cargo install sqlx-cli --no-default-features --features postgres,rustls
-```
-
-#### Run
+One-time installs:
 
 ```bash
-# 1. Start Postgres in the background
-docker compose up -d db
-
-# 2. Set up env
-cp .env.example .env
-
-# 3. Generate a strong session secret and paste it into .env (SESSION_SECRET=...)
-openssl rand -base64 64
-
-# 4. Create the database and apply migrations
-sqlx database create
-sqlx migrate run
-
-# 5. Seed three demo users (admin / teller / customer)
-cargo run --bin seed
-
-# 6. Run the app
-cargo run
+# macOS
+brew install --cask docker          # then: open -a Docker
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh   # Rust (local run only)
 ```
 
-Open <http://localhost:8080>.
+```powershell
+# Windows (PowerShell) — restart the shell afterwards so PATH updates
+winget install Docker.DockerDesktop  # launch it once from the Start Menu
+winget install Rustlang.Rustup       # Rust (local run only)
+```
+
+> No `winget`? Grab installers from <https://www.docker.com/products/docker-desktop/>
+> and <https://rustup.rs/>. On Windows, Git Bash lets you follow the macOS
+> commands (`cp`, `openssl`, `source`) verbatim.
 
 ---
 
-### Windows (PowerShell)
+### Option A — Docker (full stack)
 
-Open **PowerShell 7+** (or Windows PowerShell 5.1) — not Command Prompt.
-
-#### One-time install
-
-```powershell
-# Rust toolchain (skip if you already have it)
-winget install Rustlang.Rustup
-# Restart the shell so cargo is on PATH.
-
-# Docker Desktop (provides the Postgres container)
-winget install Docker.DockerDesktop
-# Launch Docker Desktop once from the Start Menu so the daemon starts.
-
-# SQLx CLI for migrations
-cargo install sqlx-cli --no-default-features --features postgres,rustls
+```bash
+cp .env.example .env          # optional, but recommended: set your own SESSION_SECRET
+docker compose up --build
 ```
 
-> If `winget` isn't available, download installers from
-> <https://rustup.rs/> and <https://www.docker.com/products/docker-desktop/>.
+That builds and starts three services:
 
-#### Run
+| Service | What it does |
+|---|---|
+| `db` | PostgreSQL 16 (data persisted in the `ferrobank_pg` volume) |
+| `app` | The FerroBank server — applies migrations on startup, serves on `:8080` |
+| `seed` | One-shot job: applies migrations, inserts demo data, then **exits** (showing as "exited" is expected) |
 
-```powershell
-# 1. Start Postgres in the background
+Common variations:
+
+```bash
+docker compose up --build -d                            # run in the background
+docker compose logs -f app                              # tail the app logs
+docker compose down                                     # stop everything (keeps data)
+docker compose down -v && docker compose up --build     # wipe all data and reseed from scratch
+```
+
+The seed is idempotent, so it's safe on every `up`. To run a **clean instance with
+no demo data** (e.g. for a real deployment), re-add `profiles: ["seed"]` to the
+`seed` service in `docker-compose.yml`; it will then only run when you ask for it
+explicitly with `docker compose run --rm seed`.
+
+---
+
+### Option B — Local (`cargo`)
+
+Postgres still runs in Docker; only the app runs natively.
+
+```bash
+# 1. Start just Postgres
 docker compose up -d db
 
-# 2. Set up env
-Copy-Item .env.example .env
+# 2. Configure env
+cp .env.example .env
 
-# 3. Generate a strong session secret and paste it into .env (SESSION_SECRET=...)
-$bytes = New-Object byte[] 64
-[System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
-[Convert]::ToBase64String($bytes)
+# 3. Generate a 64+ byte session secret and paste it into .env as SESSION_SECRET=...
+openssl rand -base64 64
 
-# 4. Create the database and apply migrations
-sqlx database create
-sqlx migrate run
-
-# 5. Seed three demo users (admin / teller / customer)
+# 4. Seed demo data (this also applies migrations)
 cargo run --bin seed
 
-# 6. Run the app
+# 5. Run the app (also applies any pending migrations on startup)
 cargo run
 ```
 
-Open <http://localhost:8080>.
+Windows PowerShell equivalent for steps 2–3:
 
-> If you have Git for Windows installed, you can use Git Bash and follow the
-> **macOS** instructions verbatim (the `openssl`, `cp`, and `source` commands
-> all work there).
+```powershell
+Copy-Item .env.example .env
+$bytes = New-Object byte[] 64
+[System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+[Convert]::ToBase64String($bytes)
+```
 
-### Default seeded users (created by `cargo run --bin seed`)
+> **No SQLx CLI needed to get started.** Both the app and the seed binary run the
+> migrations automatically on startup, and the Postgres container already creates
+> the `ferrobank` database — so `sqlx database create` / `sqlx migrate run` are not
+> required just to boot. Install `sqlx-cli` only when you want to *author* new
+> migrations (see Development workflow).
+
+---
+
+### Default seeded users
+
+Created by the `seed` job (Docker) or `cargo run --bin seed` (local):
 
 | Email | Password | Role |
 |---|---|---|
-| `admin@ferrobank.local` | `admin123` *(change me)* | Admin |
-| `teller@ferrobank.local` | `teller123` | Teller |
-| `alice@ferrobank.local`  | `alice123`  | Customer |
+| `admin@ferrobank.local`   | `admin123` *(change me)* | Admin |
+| `teller@ferrobank.local`  | `teller123`  | Teller |
+| `alice@ferrobank.local`   | `alice123`   | Customer |
+| `bob@ferrobank.local`     | `bob123`     | Customer |
+| `charlie@ferrobank.local` | `charlie123` | Customer |
+| `diana@ferrobank.local`   | `diana123`   | Customer |
 
-The seed binary calls `AuthService::register` for each user, so the passwords are
-hashed with the same argon2id code path that production uses. Re-running the
-seed is safe — existing users are skipped.
+The seed calls `AuthService::register` for each user, so passwords are hashed with
+the same argon2id path production uses. It also creates demo accounts, loans,
+transfers, and audit entries so the dashboards have something to show. Re-running
+it is safe — existing rows are skipped.
 
-*These dev seeds exist so teammates can log in without going through registration
-on every fresh database. They should be removed (or have their passwords rotated)
-before any real deployment.*
+*These dev seeds exist so teammates can log in without registering on every fresh
+database. Remove them (or rotate the passwords) before any real deployment.*
 
 ---
 
