@@ -10,7 +10,17 @@ use crate::models::account::{Account, AccountStatus, AccountType};
 
 #[async_trait]
 pub trait AccountService: Send + Sync {
-    async fn open_account(&self, user_id: i64, kind: AccountType) -> Result<Account, AppError>;
+    /// Open an account. `approved = false` creates it as `pending` (a customer
+    /// self-opening, which a teller/admin must then approve); `approved = true`
+    /// creates it `active` immediately (used by staff/seed).
+    async fn open_account(
+        &self,
+        user_id: i64,
+        kind: AccountType,
+        approved: bool,
+    ) -> Result<Account, AppError>;
+    /// Staff action: approve a pending account, making it active.
+    async fn approve_account(&self, account_id: i64) -> Result<(), AppError>;
     async fn close_account(&self, account_id: i64) -> Result<(), AppError>;
     async fn freeze_account(&self, account_id: i64) -> Result<(), AppError>;
     /// Staff action: return a frozen account to active.
@@ -29,7 +39,7 @@ pub trait AccountService: Send + Sync {
 }
 
 pub struct PgAccountService {
-    pub db: PgPool,
+    db: PgPool,
 }
 
 impl PgAccountService {
@@ -49,7 +59,18 @@ impl PgAccountService {
 
 #[async_trait]
 impl AccountService for PgAccountService {
-    async fn open_account(&self, user_id: i64, kind: AccountType) -> Result<Account, AppError> {
+    async fn open_account(
+        &self,
+        user_id: i64,
+        kind: AccountType,
+        approved: bool,
+    ) -> Result<Account, AppError> {
+        let status = if approved {
+            AccountStatus::Active
+        } else {
+            AccountStatus::Pending
+        };
+
         // Retry on the (extremely unlikely) account-number collision.
         for attempt in 0..3 {
             let account_number = Self::random_account_number();
@@ -57,13 +78,14 @@ impl AccountService for PgAccountService {
             let result = sqlx::query_as::<_, Account>(
                 r#"
                 INSERT INTO accounts (user_id, account_number, kind, status, balance)
-                VALUES ($1, $2, $3, 'active', 0)
+                VALUES ($1, $2, $3, $4, 0)
                 RETURNING id, user_id, account_number, kind, status, balance, created_at
                 "#,
             )
             .bind(user_id)
             .bind(&account_number)
             .bind(kind)
+            .bind(status)
             .fetch_one(&self.db)
             .await;
 
@@ -74,6 +96,7 @@ impl AccountService for PgAccountService {
                         account_id = account.id,
                         account_number = %account.account_number,
                         kind = ?account.kind,
+                        status = ?account.status,
                         "opened account"
                     );
                     return Ok(account);
@@ -90,6 +113,24 @@ impl AccountService for PgAccountService {
         Err(AppError::Internal(anyhow::anyhow!(
             "failed to open account after 3 attempts"
         )))
+    }
+
+    async fn approve_account(&self, account_id: i64) -> Result<(), AppError> {
+        let rows = sqlx::query(
+            r#"UPDATE accounts SET status = 'active' WHERE id = $1 AND status = 'pending'"#,
+        )
+        .bind(account_id)
+        .execute(&self.db)
+        .await?;
+
+        if rows.rows_affected() == 0 {
+            return Err(AppError::Conflict(
+                "account is not pending approval".into(),
+            ));
+        }
+
+        tracing::info!(account_id, "approved account");
+        Ok(())
     }
 
     async fn close_account(&self, account_id: i64) -> Result<(), AppError> {

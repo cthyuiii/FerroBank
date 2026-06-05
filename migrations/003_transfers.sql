@@ -16,6 +16,9 @@ CREATE TABLE transfers (
     amount              NUMERIC(18, 2)  NOT NULL,
     status              transfer_status NOT NULL DEFAULT 'pending',
     note                TEXT,
+    -- Human-readable reason a transfer was rejected or flagged (e.g.
+    -- "insufficient funds"). NULL for ordinary completed/pending transfers.
+    status_reason       TEXT,
     -- argon2 hash of the 6-digit OTP. NULL once the transfer has been confirmed.
     otp_hash            TEXT,
     created_at          TIMESTAMPTZ     NOT NULL DEFAULT now(),

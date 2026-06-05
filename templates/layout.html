@@ -219,6 +219,47 @@
       var empty = document.getElementById(emptyId);
       if (empty) empty.classList.toggle('hidden', shown !== 0);
     }
+
+    // Count-up animation for monetary values. On load, any leaf element whose
+    // text is just a currency amount (e.g. "$5,000.00", "−$25.00") animates
+    // from $0 up to its value. Respects reduced-motion and runs once per element.
+    function fbAnimateMoney() {
+      if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+      var moneyRe = /^([+\-−]?)\$\s?(\d{1,3}(?:,\d{3})*(?:\.\d+)?|\d+(?:\.\d+)?)$/;
+      var nodes = document.querySelectorAll('td, span, div, strong, b, h1, h2, h3, p');
+      nodes.forEach(function (el) {
+        if (el.children.length !== 0) return;           // leaf elements only
+        if (el.dataset.fbMoney) return;                 // don't re-animate
+        var m = el.textContent.trim().match(moneyRe);
+        if (!m) return;
+        var prefix = m[1] || '';
+        var numStr = m[2].replace(/,/g, '');
+        var target = parseFloat(numStr);
+        if (isNaN(target)) return;
+        var dec = numStr.indexOf('.') >= 0 ? numStr.split('.')[1].length : 0;
+        if (dec < 2) dec = 2;
+        var hadComma = m[2].indexOf(',') >= 0;
+        el.dataset.fbMoney = '1';
+
+        function fmt(v) {
+          var s = hadComma
+            ? v.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec })
+            : v.toFixed(dec);
+          return prefix + '$' + s;
+        }
+        var startTime = performance.now();
+        var duration = 700;
+        function step(now) {
+          var p = Math.min(1, (now - startTime) / duration);
+          var eased = 1 - Math.pow(1 - p, 3);           // ease-out cubic
+          el.textContent = fmt(target * eased);
+          if (p < 1) requestAnimationFrame(step);
+          else el.textContent = fmt(target);
+        }
+        requestAnimationFrame(step);
+      });
+    }
+    document.addEventListener('DOMContentLoaded', fbAnimateMoney);
   </script>
 </body>
 </html>

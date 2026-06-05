@@ -35,7 +35,7 @@ pub trait AuditService: Send + Sync {
 }
 
 pub struct PgAuditService {
-    pub db: PgPool,
+    db: PgPool,
 }
 
 impl PgAuditService {

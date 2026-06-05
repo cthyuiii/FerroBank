@@ -208,10 +208,15 @@ fn redirect(location: &str) -> HttpResponse {
         .finish()
 }
 
-/// Customers land on their own accounts page; staff land on the admin dashboard.
+/// Where each role lands after signing in.
+/// - Admins get the admin dashboard.
+/// - Tellers work the loan queue (they're not allowed in the admin scope, so
+///   sending them to `/admin/dashboard` would 403).
+/// - Customers go to their accounts.
 fn post_login_destination(role: Role) -> &'static str {
     match role {
-        Role::Admin | Role::Teller => "/admin/dashboard",
+        Role::Admin => "/admin/dashboard",
+        Role::Teller => "/loans",
         Role::Customer => "/accounts",
     }
 }

@@ -167,7 +167,7 @@ async fn seed_accounts(
                 x.id
             }
             None => {
-                let x = accounts.open_account(user_id, a.kind).await?;
+                let x = accounts.open_account(user_id, a.kind, true).await?;
                 println!("  ✓ created {:<22} kind={:?}  id={}", a.key, a.kind, x.id);
                 x.id
             }
@@ -237,25 +237,27 @@ async fn seed_transfers(
         return Ok(());
     }
 
-    // (from, to, amount, status, note, days_ago)
-    let plan: &[(&str, &str, &str, &str, &str, i32)] = &[
-        ("alice_checking",  "bob_checking",     "100.00",  "completed", "rent split",   7),
-        ("bob_checking",    "charlie_checking",  "50.00",  "completed", "groceries",    1),
-        ("alice_savings",   "diana_savings",    "200.00",  "completed", "welcome gift", 0),
-        ("alice_checking",  "bob_savings",     "9999.00",  "completed", "wedding gift", 2),  // flagged: ≥ $10k threshold? — under, but big
-        ("bob_checking",    "alice_checking",    "25.00",  "rejected",  "test",         3),
+    // (from, to, amount, status, note, status_reason, days_ago)
+    // `status_reason` is only meaningful for non-completed transfers; it explains
+    // why the transfer was rejected so the UI doesn't have to guess.
+    let plan: &[(&str, &str, &str, &str, &str, Option<&str>, i32)] = &[
+        ("alice_checking",  "bob_checking",     "100.00",  "completed", "rent split",   None,                        7),
+        ("bob_checking",    "charlie_checking",  "50.00",  "completed", "groceries",    None,                        1),
+        ("alice_savings",   "diana_savings",    "200.00",  "completed", "welcome gift", None,                        0),
+        ("alice_checking",  "bob_savings",     "9999.00",  "completed", "wedding gift", None,                        2),
+        ("bob_checking",    "alice_checking",    "25.00",  "rejected",  "test",         Some("insufficient funds"),  3),
     ];
 
-    for (from_key, to_key, amount, status, note, days_ago) in plan {
+    for (from_key, to_key, amount, status, note, reason, days_ago) in plan {
         let from = account_ids[*from_key];
         let to = account_ids[*to_key];
         let amount: Decimal = amount.parse()?;
         sqlx::query(
             r#"
             INSERT INTO transfers
-                (from_account_id, to_account_id, amount, status, note, created_at)
+                (from_account_id, to_account_id, amount, status, note, status_reason, created_at)
             VALUES
-                ($1, $2, $3, $4::transfer_status, $5, now() - ($6 || ' days')::interval)
+                ($1, $2, $3, $4::transfer_status, $5, $6, now() - ($7 || ' days')::interval)
             "#,
         )
         .bind(from)
@@ -263,6 +265,7 @@ async fn seed_transfers(
         .bind(amount)
         .bind(status)
         .bind(note)
+        .bind(*reason)
         .bind(days_ago.to_string())
         .execute(pool)
         .await?;

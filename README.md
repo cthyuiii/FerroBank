@@ -35,13 +35,23 @@ See **[ARCHITECTURE.md](./ARCHITECTURE.md)** for how the pieces fit and **[TEAM_
 
 | Module | Owner | Description |
 |---|---|---|
-| Auth | M2 | Registration, login, sessions, roles, account lockout |
-| Accounts | M3 | Open/close accounts, balances, account types, PDF statements |
-| Transfers | M4 | ACID money movement, **Mutex + row-lock concurrency**, OTP confirm, fraud rules, audit log |
-| Loans & Fixed Deposits | M5 | Loan applications, amortization, repayments, fixed-deposit accrual |
-| Admin Dashboard | M1 (Platform Lead) | Cross-module read-only views, audit-log explorer |
+| Auth | M2 | Registration, login, argon2 password hashing, cookie sessions, roles (customer/teller/admin) |
+| Accounts | M3 | Open/close/freeze accounts, balances, savings & checking, **teller-approved opening** (pending → active), admin balance adjustments |
+| Transfers | M4 | ACID money movement, **Mutex rate-limit + row-lock concurrency + explicit rollback**, OTP confirm, rejection reasons, fraud rules, audit log |
+| Loans | M5 | Applications, simple-interest model, **dual approval (teller + admin)**, repayments that debit a funding account |
+| Admin & Staff | M1 (Platform Lead) | Admin dashboard with fraud signals, searchable audit log, all-accounts CRUD; staff (teller) area for account approval and transfer review |
 
 See **[TEAM_CHARTER.md](./TEAM_CHARTER.md)** for each member's group baseline and their individual extended feature (which together cover the 60% group + 40% individual marking criteria).
+
+## Roles & access
+
+| Role | Lands on | Can do |
+|---|---|---|
+| Customer | `/accounts` | Open accounts (pending approval), transfer money (OTP), apply for and repay loans |
+| Teller | `/loans` | Review **all** loans + record the teller approval; **approve accounts** and view all transfers under `/staff/*` |
+| Admin | `/admin/dashboard` | Everything: dashboard + fraud signals, audit log, full account CRUD, the admin loan approval |
+
+> Banking-domain highlights for the spec: a concurrency-safe transfer engine (Mutex + `SELECT … FOR UPDATE` + rollback), OTP simulation, audit logging, fraud detection (large / structuring / velocity / rejected), and dual-control approvals. See **[docs/uml_domain_model.mermaid](./docs/uml_domain_model.mermaid)** and **[docs/uml_service_architecture.mermaid](./docs/uml_service_architecture.mermaid)** for the class diagrams.
 
 ---
 

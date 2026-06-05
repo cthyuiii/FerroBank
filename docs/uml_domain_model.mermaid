@@ -1,0 +1,109 @@
+classDiagram
+    direction LR
+
+    class User {
+        +i64 id
+        +String email
+        +String password_hash
+        +String full_name
+        +Role role
+        +DateTime created_at
+    }
+    class Account {
+        +i64 id
+        +i64 user_id
+        +String account_number
+        +AccountType kind
+        +AccountStatus status
+        +Decimal balance
+        +DateTime created_at
+    }
+    class Transfer {
+        +i64 id
+        +i64 from_account_id
+        +i64 to_account_id
+        +Decimal amount
+        +TransferStatus status
+        +Option~String~ note
+        +Option~String~ status_reason
+        +DateTime created_at
+    }
+    class Loan {
+        +i64 id
+        +i64 user_id
+        +Decimal principal
+        +Decimal interest_rate
+        +i32 term_months
+        +LoanStatus status
+        +DateTime created_at
+        +rate_pct() String
+    }
+    class LoanApproval {
+        +i64 id
+        +i64 loan_id
+        +i64 approver_user_id
+        +Role role
+        +DateTime approved_at
+    }
+    class Repayment {
+        +i64 id
+        +i64 loan_id
+        +Decimal amount
+        +Option~i64~ account_id
+        +DateTime paid_at
+    }
+    class AuditEntry {
+        +i64 id
+        +Option~i64~ actor_user_id
+        +String event
+        +Json payload
+        +DateTime created_at
+    }
+
+    class Role {
+        <<enumeration>>
+        Customer
+        Teller
+        Admin
+    }
+    class AccountType {
+        <<enumeration>>
+        Savings
+        Checking
+    }
+    class AccountStatus {
+        <<enumeration>>
+        Pending
+        Active
+        Frozen
+        Closed
+    }
+    class TransferStatus {
+        <<enumeration>>
+        Pending
+        Completed
+        Failed
+        Rejected
+    }
+    class LoanStatus {
+        <<enumeration>>
+        Pending
+        Approved
+        Active
+        PaidOff
+        Rejected
+    }
+
+    User "1" --> "0..*" Account : owns
+    User "1" --> "0..*" Loan : borrows
+    User "1" --> "0..*" AuditEntry : actor
+    Account "1" --> "0..*" Transfer : sends (from)
+    Account "1" --> "0..*" Transfer : receives (to)
+    Account "1" --> "0..*" Repayment : funds
+    Loan "1" --> "0..*" Repayment : repaid by
+    Loan "1" --> "0..2" LoanApproval : signed off by
+    User ..> Role
+    Account ..> AccountType
+    Account ..> AccountStatus
+    Transfer ..> TransferStatus
+    Loan ..> LoanStatus

@@ -6,14 +6,13 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use rust_decimal::Decimal;
 use sqlx::{FromRow, PgPool};
 
 use crate::errors::AppError;
 use crate::models::account::{AccountStatus, AccountType};
-use crate::models::loan::Loan;
-use crate::models::transfer::{Transfer, TransferStatus};
+use crate::models::transfer::TransferStatus;
 use crate::models::user::Role;
 use crate::services::account_service::AccountService;
 use crate::services::audit_service::{AuditEntry, AuditService};
@@ -22,6 +21,9 @@ use crate::services::transfer_service::TransferService;
 
 /// Threshold (dollars) at or above which a transfer is treated as noteworthy.
 const LARGE_TRANSFER_THRESHOLD: i64 = 10_000;
+/// Amounts in `[STRUCTURING_FLOOR, LARGE_TRANSFER_THRESHOLD)` look like attempts
+/// to stay *just under* the reporting threshold — a classic structuring signal.
+const STRUCTURING_FLOOR: i64 = 9_000;
 
 /// One row of the admin "all accounts" table — account joined to its owner.
 #[derive(Debug, Clone, FromRow)]
@@ -43,6 +45,8 @@ pub struct AdminTransferRow {
     pub id: i64,
     pub from_account_id: i64,
     pub to_account_id: i64,
+    pub from_user_id: i64,
+    pub to_user_id: i64,
     pub from_number: String,
     pub to_number: String,
     pub from_owner: String,
@@ -64,6 +68,9 @@ impl AdminTransferRow {
         if self.amount >= Decimal::from(LARGE_TRANSFER_THRESHOLD) {
             return Some("Large transfer (≥ $10,000)".to_string());
         }
+        if self.amount >= Decimal::from(STRUCTURING_FLOOR) {
+            return Some("Just under $10,000 (possible structuring)".to_string());
+        }
         None
     }
 }
@@ -77,16 +84,52 @@ pub struct AdminUserRow {
     pub role: Role,
 }
 
-/// Pre-computed snapshot shown on `/admin/dashboard`.
+/// A transfer surfaced by the fraud rules, with a human-readable reason computed
+/// in SQL (so aggregate rules like velocity can be explained, not just per-row ones).
+#[derive(Debug, Clone, FromRow)]
+pub struct FlaggedTransfer {
+    pub id: i64,
+    pub from_user_id: i64,
+    pub to_user_id: i64,
+    pub from_owner: String,
+    pub to_owner: String,
+    pub amount: Decimal,
+    pub status: TransferStatus,
+    pub reason: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// One pending-loan row for the dashboard, joined to the applicant's name so the
+/// dashboard never shows a raw user id.
+#[derive(Debug, Clone, FromRow)]
+pub struct AdminLoanRow {
+    pub id: i64,
+    pub user_id: i64,
+    pub applicant_name: String,
+    pub principal: Decimal,
+    pub interest_rate: Decimal,
+    pub term_months: i32,
+}
+
+impl AdminLoanRow {
+    /// Annual rate as a percentage string, e.g. "5.25%".
+    pub fn rate_pct(&self) -> String {
+        let pct = (self.interest_rate * Decimal::from(100)).round_dp(2).normalize();
+        format!("{pct}%")
+    }
+}
+
+/// Pre-computed snapshot shown on `/admin/dashboard`. Transfers and loans are
+/// pre-joined to owner/applicant names so the view shows people, not ids.
 #[derive(Debug, Clone)]
 pub struct DashboardSnapshot {
     pub active_accounts: i64,
     pub total_deposits: Decimal,
     pub portfolio_outstanding: Decimal,
     pub pending_loans: usize,
-    pub recent_transfers: Vec<Transfer>,
-    pub flagged_transfers: Vec<Transfer>,
-    pub pending_loans_list: Vec<Loan>,
+    pub recent_transfers: Vec<AdminTransferRow>,
+    pub flagged_transfers: Vec<FlaggedTransfer>,
+    pub pending_loans_list: Vec<AdminLoanRow>,
     pub recent_audit: Vec<AuditEntry>,
 }
 
@@ -96,22 +139,27 @@ pub trait AdminService: Send + Sync {
 
     /// Every account in the bank, joined to its owner, newest first.
     async fn all_accounts(&self) -> Result<Vec<AdminAccountRow>, AppError>;
-    /// Every transfer, joined to both parties, newest first (capped).
-    async fn all_transfers(&self) -> Result<Vec<AdminTransferRow>, AppError>;
-    /// All users — for the "open an account for a customer" picker.
-    async fn all_users(&self) -> Result<Vec<AdminUserRow>, AppError>;
+    /// Every transfer, joined to both parties, newest first. Optional inclusive
+    /// date bounds (`from`/`to`) filter by `created_at`.
+    async fn all_transfers(
+        &self,
+        from: Option<NaiveDate>,
+        to: Option<NaiveDate>,
+    ) -> Result<Vec<AdminTransferRow>, AppError>;
+    /// Customers only — accounts may only be opened for customers, so the
+    /// "open an account" picker must not offer staff users.
+    async fn customers(&self) -> Result<Vec<AdminUserRow>, AppError>;
 }
 
 pub struct PgAdminService {
-    pub db: PgPool,
-    // The other services are set after construction via `with_services`.
-    // We can't take them in `new` because `PgAdminService` itself is constructed
-    // in `main.rs` before the other services exist (chicken-and-egg avoidance).
-    // The Platform Lead injects them via a builder method instead.
-    pub accounts: Option<Arc<dyn AccountService>>,
-    pub transfers: Option<Arc<dyn TransferService>>,
-    pub loans: Option<Arc<dyn LoanService>>,
-    pub audit: Option<Arc<dyn AuditService>>,
+    // Private state — consumers use the `AdminService` trait. The dependent
+    // services are injected after construction via `with_services` (a builder),
+    // because `PgAdminService` is built in `main.rs` before they exist.
+    db: PgPool,
+    accounts: Option<Arc<dyn AccountService>>,
+    transfers: Option<Arc<dyn TransferService>>,
+    loans: Option<Arc<dyn LoanService>>,
+    audit: Option<Arc<dyn AuditService>>,
 }
 
 impl PgAdminService {
@@ -139,6 +187,94 @@ impl PgAdminService {
         self.audit = Some(audit);
         self
     }
+
+    // ── Joined helpers for the dashboard (people, not ids) ───────────────
+
+    async fn recent_transfers_detailed(&self, limit: i64) -> Result<Vec<AdminTransferRow>, AppError> {
+        let rows = sqlx::query_as::<_, AdminTransferRow>(
+            r#"
+            SELECT t.id, t.from_account_id, t.to_account_id,
+                   fa.user_id AS from_user_id, ta.user_id AS to_user_id,
+                   fa.account_number AS from_number, ta.account_number AS to_number,
+                   fu.full_name AS from_owner, tu.full_name AS to_owner,
+                   t.amount, t.status, t.note, t.status_reason, t.created_at
+            FROM transfers t
+            JOIN accounts fa ON fa.id = t.from_account_id
+            JOIN accounts ta ON ta.id = t.to_account_id
+            JOIN users    fu ON fu.id = fa.user_id
+            JOIN users    tu ON tu.id = ta.user_id
+            ORDER BY t.created_at DESC
+            LIMIT $1
+            "#,
+        )
+        .bind(limit)
+        .fetch_all(&self.db)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Rule-based fraud signals, with the reason computed in SQL so aggregate
+    /// rules (velocity) can be explained alongside per-row ones. Rules:
+    ///   1. any rejected transfer,
+    ///   2. large transfer (≥ $10,000),
+    ///   3. structuring — amount just under the threshold (≥ $9,000),
+    ///   4. velocity — the source account made 4+ transfers in the prior 24h.
+    async fn flagged_transfers_detailed(&self) -> Result<Vec<FlaggedTransfer>, AppError> {
+        let rows = sqlx::query_as::<_, FlaggedTransfer>(
+            r#"
+            SELECT t.id,
+                   fa.user_id AS from_user_id, ta.user_id AS to_user_id,
+                   fu.full_name AS from_owner, tu.full_name AS to_owner,
+                   t.amount, t.status,
+                   CASE
+                     WHEN t.status = 'rejected'
+                          THEN COALESCE(t.status_reason, 'Rejected transfer')
+                     WHEN t.amount >= $1
+                          THEN 'Large transfer (>= $10,000)'
+                     WHEN t.amount >= $2
+                          THEN 'Just under $10,000 (possible structuring)'
+                     ELSE 'High velocity: 4+ transfers from this account in 24h'
+                   END AS reason,
+                   t.created_at
+            FROM transfers t
+            JOIN accounts fa ON fa.id = t.from_account_id
+            JOIN accounts ta ON ta.id = t.to_account_id
+            JOIN users    fu ON fu.id = fa.user_id
+            JOIN users    tu ON tu.id = ta.user_id
+            WHERE t.status = 'rejected'
+               OR t.amount >= $2
+               OR (
+                    SELECT COUNT(*) FROM transfers v
+                    WHERE v.from_account_id = t.from_account_id
+                      AND v.created_at <= t.created_at
+                      AND v.created_at >  t.created_at - INTERVAL '24 hours'
+                  ) >= 4
+            ORDER BY t.created_at DESC
+            LIMIT 100
+            "#,
+        )
+        .bind(Decimal::from(LARGE_TRANSFER_THRESHOLD))
+        .bind(Decimal::from(STRUCTURING_FLOOR))
+        .fetch_all(&self.db)
+        .await?;
+        Ok(rows)
+    }
+
+    async fn pending_loans_detailed(&self) -> Result<Vec<AdminLoanRow>, AppError> {
+        let rows = sqlx::query_as::<_, AdminLoanRow>(
+            r#"
+            SELECT l.id, l.user_id, u.full_name AS applicant_name,
+                   l.principal, l.interest_rate, l.term_months
+            FROM loans l
+            JOIN users u ON u.id = l.user_id
+            WHERE l.status = 'pending'
+            ORDER BY l.created_at ASC
+            "#,
+        )
+        .fetch_all(&self.db)
+        .await?;
+        Ok(rows)
+    }
 }
 
 #[async_trait]
@@ -158,18 +294,10 @@ impl AdminService for PgAdminService {
             Some(l) => l.portfolio_outstanding().await?,
             None => Decimal::ZERO,
         };
-        let pending_loans_list = match &self.loans {
-            Some(l) => l.pending_applications().await?,
-            None => vec![],
-        };
-        let recent_transfers = match &self.transfers {
-            Some(t) => t.recent(10).await?,
-            None => vec![],
-        };
-        let flagged_transfers = match &self.transfers {
-            Some(t) => t.flagged().await?,
-            None => vec![],
-        };
+        // Joined directly so the dashboard shows applicant/owner names, not ids.
+        let pending_loans_list = self.pending_loans_detailed().await?;
+        let recent_transfers = self.recent_transfers_detailed(10).await?;
+        let flagged_transfers = self.flagged_transfers_detailed().await?;
         let recent_audit = match &self.audit {
             Some(a) => a.recent(20).await?,
             None => vec![],
@@ -202,10 +330,18 @@ impl AdminService for PgAdminService {
         Ok(rows)
     }
 
-    async fn all_transfers(&self) -> Result<Vec<AdminTransferRow>, AppError> {
+    async fn all_transfers(
+        &self,
+        from: Option<NaiveDate>,
+        to: Option<NaiveDate>,
+    ) -> Result<Vec<AdminTransferRow>, AppError> {
+        // Every transfer in the bank, optionally bounded by an inclusive date
+        // range. The `$n::date IS NULL` guards make each bound optional, and the
+        // upper bound adds a day so the whole `to` date is included.
         let rows = sqlx::query_as::<_, AdminTransferRow>(
             r#"
             SELECT t.id, t.from_account_id, t.to_account_id,
+                   fa.user_id AS from_user_id, ta.user_id AS to_user_id,
                    fa.account_number AS from_number, ta.account_number AS to_number,
                    fu.full_name AS from_owner, tu.full_name AS to_owner,
                    t.amount, t.status, t.note, t.status_reason, t.created_at
@@ -214,21 +350,25 @@ impl AdminService for PgAdminService {
             JOIN accounts ta ON ta.id = t.to_account_id
             JOIN users    fu ON fu.id = fa.user_id
             JOIN users    tu ON tu.id = ta.user_id
+            WHERE ($1::date IS NULL OR t.created_at >= $1::date)
+              AND ($2::date IS NULL OR t.created_at <  ($2::date + INTERVAL '1 day'))
             ORDER BY t.created_at DESC
-            LIMIT 500
             "#,
         )
+        .bind(from)
+        .bind(to)
         .fetch_all(&self.db)
         .await?;
         Ok(rows)
     }
 
-    async fn all_users(&self) -> Result<Vec<AdminUserRow>, AppError> {
+    async fn customers(&self) -> Result<Vec<AdminUserRow>, AppError> {
         let rows = sqlx::query_as::<_, AdminUserRow>(
             r#"
             SELECT id, email, full_name, role
             FROM users
-            ORDER BY id
+            WHERE role = 'customer'
+            ORDER BY full_name
             "#,
         )
         .fetch_all(&self.db)

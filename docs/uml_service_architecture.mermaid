@@ -1,0 +1,98 @@
+classDiagram
+    direction LR
+
+    %% ── Service traits (abstraction / common interfaces) ──
+    class AuthService {
+        <<trait>>
+        +register(NewUser) User
+        +login(email, pw) User
+        +find_by_id(id) User
+    }
+    class AccountService {
+        <<trait>>
+        +open_account(user, kind, approved) Account
+        +approve_account(id)
+        +freeze_account(id)
+        +unfreeze_account(id)
+        +close_account(id)
+        +adjust_balance(id, delta) Decimal
+        +list_for_user(user) Vec~Account~
+    }
+    class TransferService {
+        <<trait>>
+        +create(...) TransferCreated
+        +confirm(actor, id, otp) Transfer
+        +history(user) Vec~Transfer~
+        +recent(limit)
+        +flagged()
+    }
+    class LoanService {
+        <<trait>>
+        +apply(...) Loan
+        +approve(id, approver, role) Loan
+        +reject(id) Loan
+        +approval_flags(id) (bool,bool)
+        +record_repayment(loan, amount, account) Repayment
+        +outstanding_balance(id) Decimal
+        +list_all() Vec~Loan~
+    }
+    class AuditService {
+        <<trait>>
+        +record(actor, event, payload)
+        +recent(limit) Vec~AuditEntry~
+    }
+    class AdminService {
+        <<trait>>
+        +snapshot() DashboardSnapshot
+        +all_accounts() Vec~AdminAccountRow~
+        +all_transfers(from, to) Vec~AdminTransferRow~
+        +customers() Vec~AdminUserRow~
+    }
+
+    %% ── Concrete Postgres implementations ──
+    class PgAuthService { -PgPool db }
+    class PgAccountService { -PgPool db }
+    class PgTransferService {
+        -PgPool db
+        -Arc~AuditService~ audit
+        -Mutex~HashMap~ rate_limit
+    }
+    class PgLoanService { -PgPool db }
+    class PgAuditService { -PgPool db }
+    class PgAdminService {
+        -PgPool db
+        -Option~AccountService~ accounts
+        -Option~TransferService~ transfers
+        -Option~LoanService~ loans
+        -Option~AuditService~ audit
+    }
+
+    AuthService <|.. PgAuthService : implements
+    AccountService <|.. PgAccountService : implements
+    TransferService <|.. PgTransferService : implements
+    LoanService <|.. PgLoanService : implements
+    AuditService <|.. PgAuditService : implements
+    AdminService <|.. PgAdminService : implements
+
+    PgTransferService ..> AuditService : audits via
+    PgAdminService ..> AccountService : composes
+    PgAdminService ..> TransferService : composes
+    PgAdminService ..> LoanService : composes
+    PgAdminService ..> AuditService : composes
+
+    %% ── HTTP layer ──
+    class Handlers {
+        home  auth  accounts
+        transfers  loans  admin
+    }
+    class Middleware {
+        CurrentUser (extractor)
+        RequireRole (guard)
+    }
+    Handlers ..> AuthService : web::Data~dyn~
+    Handlers ..> AccountService
+    Handlers ..> TransferService
+    Handlers ..> LoanService
+    Handlers ..> AdminService
+    Handlers ..> Middleware
+    PgTransferService ..> PgPool : SELECT ... FOR UPDATE

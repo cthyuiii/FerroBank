@@ -76,6 +76,8 @@ struct DetailTemplate {
     teller_approved: bool,
     admin_approved: bool,
     is_staff: bool,
+    /// Inline error (e.g. a failed repayment) shown on the loan page itself.
+    error: Option<String>,
 }
 
 // ── Form payloads ────────────────────────────────────────────────────
@@ -100,8 +102,10 @@ async fn list(
     svc: web::Data<dyn LoanService>,
     user: CurrentUser,
 ) -> Result<HttpResponse, AppError> {
+    // Staff see every loan (so they can review approved/active/paid-off ones,
+    // not just the pending queue); customers see their own.
     let (loans, staff_view) = match user.role {
-        Role::Admin | Role::Teller => (svc.pending_applications().await?, true),
+        Role::Admin | Role::Teller => (svc.list_all().await?, true),
         Role::Customer => (svc.list_for_user(user.id).await?, false),
     };
 
@@ -172,6 +176,19 @@ async fn detail(
     user: CurrentUser,
 ) -> Result<HttpResponse, AppError> {
     let loan_id = path.into_inner();
+    render_loan_detail(&svc, &account_svc, &user, loan_id, None).await
+}
+
+/// Build the loan detail page. Shared by `GET /loans/{id}` and by `repay` so a
+/// failed repayment can re-render the same page with an inline error rather than
+/// bouncing to the global error page.
+async fn render_loan_detail(
+    svc: &web::Data<dyn LoanService>,
+    account_svc: &web::Data<dyn AccountService>,
+    user: &CurrentUser,
+    loan_id: i64,
+    error: Option<String>,
+) -> Result<HttpResponse, AppError> {
     let loan = svc.get_by_id(loan_id).await?;
 
     // Customer can only see their own; staff can see any.
@@ -213,7 +230,7 @@ async fn detail(
         is_staff && loan.status == LoanStatus::Pending && !already_approved_this_role;
 
     render(DetailTemplate {
-        layout: LayoutCtx::from_user(Some(&user)),
+        layout: LayoutCtx::from_user(Some(user)),
         loan,
         outstanding,
         total_due,
@@ -224,6 +241,7 @@ async fn detail(
         teller_approved,
         admin_approved,
         is_staff,
+        error,
     })
 }
 
@@ -248,14 +266,33 @@ async fn repay(
         return Err(AppError::Forbidden);
     }
 
-    let amount = Decimal::from_str(form.amount.trim())
-        .map_err(|_| AppError::BadRequest("repayment must be a number".into()))?;
+    let amount = match Decimal::from_str(form.amount.trim()) {
+        Ok(d) => d,
+        Err(_) => {
+            return render_loan_detail(
+                &svc,
+                &account_svc,
+                &user,
+                loan_id,
+                Some("Repayment must be a number like 100.00.".into()),
+            )
+            .await;
+        }
+    };
 
-    svc.record_repayment(loan_id, amount, form.account_id).await?;
-
-    Ok(HttpResponse::Found()
-        .insert_header(("Location", format!("/loans/{loan_id}")))
-        .finish())
+    match svc.record_repayment(loan_id, amount, form.account_id).await {
+        // Success → back to the loan page.
+        Ok(_) => Ok(HttpResponse::Found()
+            .insert_header(("Location", format!("/loans/{loan_id}")))
+            .finish()),
+        // Business rejections (insufficient funds, frozen account, etc.) show
+        // inline on the loan page instead of the 409 error page.
+        Err(AppError::BadRequest(msg)) | Err(AppError::Conflict(msg)) => {
+            render_loan_detail(&svc, &account_svc, &user, loan_id, Some(msg)).await
+        }
+        // A genuine mid-transaction/internal failure still surfaces as an error.
+        Err(other) => Err(other),
+    }
 }
 
 async fn approve(

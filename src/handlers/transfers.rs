@@ -80,9 +80,25 @@ struct ConfirmTemplate {
 #[template(path = "transfers/history.html")]
 struct HistoryTemplate {
     layout: LayoutCtx,
-    transfers: Vec<Transfer>,
-    /// Account IDs the current user owns — used to flag in/out per row.
-    owned_account_ids: std::collections::HashSet<i64>,
+    rows: Vec<HistoryRow>,
+}
+
+/// One history row, pre-resolved to human-readable details so the customer view
+/// never shows raw account/user ids — just the counterparty's name and the
+/// account that sent or received the money.
+struct HistoryRow {
+    amount: rust_decimal::Decimal,
+    status: TransferStatus,
+    /// Rejection reason to show (specific reason, or a contact-admin default).
+    reason: Option<String>,
+    note: Option<String>,
+    created_at: chrono::DateTime<chrono::Utc>,
+    /// True when the money left one of the viewer's own accounts.
+    outgoing: bool,
+    /// The viewer's own account number involved in this transfer.
+    own_account: String,
+    counterparty_name: String,
+    counterparty_account: String,
 }
 
 // ── Form payloads ────────────────────────────────────────────────────
@@ -111,21 +127,86 @@ struct ConfirmForm {
 async fn history(
     svc: web::Data<dyn TransferService>,
     account_svc: web::Data<dyn AccountService>,
+    state: web::Data<AppState>,
     user: CurrentUser,
 ) -> Result<HttpResponse, AppError> {
     let transfers = svc.history(user.id).await?;
 
-    let owned_account_ids: std::collections::HashSet<i64> = account_svc
+    let owned: std::collections::HashSet<i64> = account_svc
         .list_for_user(user.id)
         .await?
         .into_iter()
         .map(|a| a.id)
         .collect();
 
+    // Resolve every account referenced (either side) to its number + owner name.
+    let mut ids: Vec<i64> = Vec::new();
+    for t in &transfers {
+        ids.push(t.from_account_id);
+        ids.push(t.to_account_id);
+    }
+    ids.sort_unstable();
+    ids.dedup();
+
+    let mut info: std::collections::HashMap<i64, (String, String)> =
+        std::collections::HashMap::new();
+    if !ids.is_empty() {
+        let lookup: Vec<(i64, String, String)> = sqlx::query_as(
+            r#"
+            SELECT a.id, a.account_number, u.full_name
+            FROM accounts a
+            JOIN users u ON u.id = a.user_id
+            WHERE a.id = ANY($1)
+            "#,
+        )
+        .bind(ids.as_slice())
+        .fetch_all(&state.db)
+        .await?;
+        for (id, number, name) in lookup {
+            info.insert(id, (number, name));
+        }
+    }
+
+    let rows: Vec<HistoryRow> = transfers
+        .into_iter()
+        .map(|t| {
+            let outgoing = owned.contains(&t.from_account_id);
+            let (own_id, cp_id) = if outgoing {
+                (t.from_account_id, t.to_account_id)
+            } else {
+                (t.to_account_id, t.from_account_id)
+            };
+            let own_account = info.get(&own_id).map(|x| x.0.clone()).unwrap_or_default();
+            let (counterparty_account, counterparty_name) = info
+                .get(&cp_id)
+                .cloned()
+                .unwrap_or_else(|| (String::new(), "Unknown".to_string()));
+            // Specific reason if we have one; otherwise a short contact-admin
+            // default for anything rejected/failed.
+            let reason = t.status_reason.clone().or_else(|| {
+                if matches!(t.status, TransferStatus::Rejected | TransferStatus::Failed) {
+                    Some("Please contact an administrator.".to_string())
+                } else {
+                    None
+                }
+            });
+            HistoryRow {
+                amount: t.amount,
+                status: t.status,
+                reason,
+                note: t.note,
+                created_at: t.created_at,
+                outgoing,
+                own_account,
+                counterparty_name,
+                counterparty_account,
+            }
+        })
+        .collect();
+
     render(HistoryTemplate {
         layout: LayoutCtx::from_user(Some(&user)),
-        transfers,
-        owned_account_ids,
+        rows,
     })
 }
 

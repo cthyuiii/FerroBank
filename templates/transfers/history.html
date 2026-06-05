@@ -15,7 +15,7 @@
 </div>
 
 <div class="rounded-lg border border-stone-200 bg-white overflow-hidden">
-  {% if transfers.is_empty() %}
+  {% if rows.is_empty() %}
     <div class="p-10 text-center">
       <div class="text-5xl mb-3">💸</div>
       <h3 class="font-semibold text-stone-900">No transfers yet</h3>
@@ -31,60 +31,41 @@
           <th class="px-4 py-2 font-medium">When</th>
           <th class="px-4 py-2 font-medium">Direction</th>
           <th class="px-4 py-2 font-medium">Counterparty</th>
+          <th class="px-4 py-2 font-medium">Your account</th>
           <th class="px-4 py-2 font-medium text-right">Amount</th>
           <th class="px-4 py-2 font-medium">Status</th>
           <th class="px-4 py-2 font-medium">Note</th>
         </tr>
       </thead>
-      <tbody class="divide-y divide-stone-100">
-        {% for t in transfers %}
-          {% if owned_account_ids.contains(t.from_account_id) %}
-            {# Outgoing transfer #}
-            <tr>
-              <td class="px-4 py-3 text-stone-500 whitespace-nowrap">{{ t.created_at.format("%Y-%m-%d %H:%M") }}</td>
-              <td class="px-4 py-3">
+      <tbody class="divide-y divide-stone-100 align-top">
+        {% for t in rows %}
+          <tr>
+            <td class="px-4 py-3 text-stone-500 whitespace-nowrap">{{ t.created_at.format("%Y-%m-%d %H:%M") }}</td>
+            <td class="px-4 py-3">
+              {% if t.outgoing %}
                 <span class="text-xs px-2 py-0.5 rounded-full bg-red-50 text-red-700 border border-red-200">Out</span>
-              </td>
-              <td class="px-4 py-3 font-mono text-stone-700">→ #{{ t.to_account_id }}</td>
-              <td class="px-4 py-3 text-right font-mono text-red-700">−${{ t.amount }}</td>
-              <td class="px-4 py-3">
-                {% if t.status == TransferStatus::Completed %}
-                  <span class="text-xs px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">{{ t.status.label() }}</span>
-                {% else if t.status == TransferStatus::Pending %}
-                  <span class="text-xs px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">{{ t.status.label() }}</span>
-                {% else %}
-                  <span class="text-xs px-2 py-0.5 rounded-full bg-stone-100 text-stone-600 border border-stone-200">{{ t.status.label() }}</span>
-                {% endif %}
-                {% if let Some(reason) = t.status_reason %}
-                  <div class="text-xs text-red-700 mt-1">{{ reason }}</div>
-                {% endif %}
-              </td>
-              <td class="px-4 py-3 text-stone-600">{% if let Some(n) = t.note %}{{ n }}{% endif %}</td>
-            </tr>
-          {% else %}
-            {# Incoming transfer #}
-            <tr>
-              <td class="px-4 py-3 text-stone-500 whitespace-nowrap">{{ t.created_at.format("%Y-%m-%d %H:%M") }}</td>
-              <td class="px-4 py-3">
+              {% else %}
                 <span class="text-xs px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">In</span>
-              </td>
-              <td class="px-4 py-3 font-mono text-stone-700">← #{{ t.from_account_id }}</td>
-              <td class="px-4 py-3 text-right font-mono text-emerald-700">+${{ t.amount }}</td>
-              <td class="px-4 py-3">
-                {% if t.status == TransferStatus::Completed %}
-                  <span class="text-xs px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">{{ t.status.label() }}</span>
-                {% else if t.status == TransferStatus::Pending %}
-                  <span class="text-xs px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">{{ t.status.label() }}</span>
-                {% else %}
-                  <span class="text-xs px-2 py-0.5 rounded-full bg-stone-100 text-stone-600 border border-stone-200">{{ t.status.label() }}</span>
-                {% endif %}
-                {% if let Some(reason) = t.status_reason %}
-                  <div class="text-xs text-red-700 mt-1">{{ reason }}</div>
-                {% endif %}
-              </td>
-              <td class="px-4 py-3 text-stone-600">{% if let Some(n) = t.note %}{{ n }}{% endif %}</td>
-            </tr>
-          {% endif %}
+              {% endif %}
+            </td>
+            <td class="px-4 py-3">
+              <div class="text-stone-900">{{ t.counterparty_name }}</div>
+              <div class="text-xs font-mono text-stone-500">
+                {% if t.outgoing %}to{% else %}from{% endif %} {{ t.counterparty_account }}
+              </div>
+            </td>
+            <td class="px-4 py-3 font-mono text-stone-700">{{ t.own_account }}</td>
+            <td class="px-4 py-3 text-right font-mono {% if t.outgoing %}text-red-700{% else %}text-emerald-700{% endif %}">
+              {% if t.outgoing %}−{% else %}+{% endif %}${{ t.amount }}
+            </td>
+            <td class="px-4 py-3">
+              <span class="text-xs px-2 py-0.5 rounded-full border {{ t.status.badge() }}">{{ t.status.label() }}</span>
+              {% if let Some(reason) = t.reason %}
+                <div class="text-xs text-red-700 mt-1">{{ reason }}</div>
+              {% endif %}
+            </td>
+            <td class="px-4 py-3 text-stone-600">{% if let Some(n) = t.note %}{{ n }}{% endif %}</td>
+          </tr>
         {% endfor %}
       </tbody>
     </table>

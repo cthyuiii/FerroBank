@@ -9,10 +9,10 @@
       {% if staff_view %}Loan operations{% else %}Lending{% endif %}
     </span>
     <h1 class="text-3xl font-semibold text-stone-900 mt-1">
-      {% if staff_view %}Pending applications{% else %}Your loans{% endif %}
+      {% if staff_view %}All loans{% else %}Your loans{% endif %}
     </h1>
     {% if staff_view %}
-      <p class="mt-1 text-sm text-stone-600">Review and approve or reject loan applications.</p>
+      <p class="mt-1 text-sm text-stone-600">Every loan in the bank. Open a pending one to approve or reject it.</p>
     {% endif %}
   </div>
   {% if !staff_view %}
@@ -28,11 +28,11 @@
     <div class="p-10 text-center">
       <div class="text-5xl mb-3">📄</div>
       <h3 class="font-semibold text-stone-900">
-        {% if staff_view %}No pending applications{% else %}No loans yet{% endif %}
+        {% if staff_view %}No loans yet{% else %}No loans yet{% endif %}
       </h3>
       <p class="mt-1 text-sm text-stone-600">
         {% if staff_view %}
-          The review queue is empty.
+          No loans have been applied for yet.
         {% else %}
           Apply for a loan to fund a big purchase, consolidate debt, or grow your business.
         {% endif %}

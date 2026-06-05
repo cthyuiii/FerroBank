@@ -1,287 +1,172 @@
 # FerroBank — Architecture
 
-This document is the reference for **how the pieces fit together**. Read it before writing your first module file.
+How the pieces fit together. See **[docs/uml_domain_model.mermaid](./docs/uml_domain_model.mermaid)**
+and **[docs/uml_service_architecture.mermaid](./docs/uml_service_architecture.mermaid)** for the
+class diagrams, and **[PROJECT_FILE_GUIDE.md](./PROJECT_FILE_GUIDE.md)** for a file-by-file tour.
 
 ---
 
-## High-level
+## High-level request flow
 
 ```
 Browser
   ↓ HTTP / form POST
-[ Actix middleware ]   ← session, auth guard, logging
+[ Actix middleware ]   ← session cookie, CurrentUser extractor, RequireRole guard, logging
   ↓
-[ Handler (Actix route) ]   ← parses form, calls service, picks template
+[ Handler (Actix route) ]   ← parses form, calls a service, picks a template
   ↓                              ↘
-[ Service trait ]                  [ Askama template ]
-  ↓                              ↙
-[ Model / SQLx query ]
+[ Service trait (dyn) ]            [ Askama template ]  → HTML
+  ↓
+[ Model + SQLx query ]
   ↓
 PostgreSQL
 ```
 
-A request enters at the top, passes through middleware that injects the current user, lands in a handler. The handler is **thin** — it parses input, calls a service method, and renders a template. The service is **thick** — that's where business rules live. The model layer is just SQLx-typed structs and queries.
+Handlers are **thin** (parse input, call a service, render). Services are **thick** —
+all business rules and transactions live there. Models are SQLx-typed structs.
 
 ---
 
-## Directory layout
+## Layered + OOP design (how the spec's OOP requirements are met)
 
-```
-ferrobank/
-├── Cargo.toml
-├── .env.example
-├── Dockerfile
-├── docker-compose.yml          # Postgres for local dev
-├── README.md
-├── ARCHITECTURE.md             # this file
-├── TEAM_CHARTER.md
-├── migrations/                 # SQLx migrations, run via sqlx-cli
-│   └── 001_init.sql
-├── static/                     # css, js, images
-├── templates/                  # Askama templates
-│   ├── layout.html             # base layout, every page extends this
-│   ├── partials/
-│   ├── auth/
-│   ├── accounts/
-│   ├── transfers/
-│   ├── loans/
-│   └── admin/
-└── src/
-    ├── main.rs                 # boot: load config, open pool, mount routes
-    ├── config.rs               # env loading
-    ├── db.rs                   # PgPool construction
-    ├── state.rs                # AppState shared via web::Data
-    ├── errors.rs               # AppError enum + ResponseError impl
-    ├── routes.rs               # mounts every module's routes()
-    ├── middleware/
-    │   ├── mod.rs
-    │   └── auth.rs             # CurrentUser extractor, RequireRole guard
-    ├── models/
-    │   ├── mod.rs
-    │   ├── user.rs             # Auth owner
-    │   ├── account.rs          # Accounts owner
-    │   ├── transfer.rs         # Transfers owner
-    │   └── loan.rs             # Loans owner
-    ├── services/
-    │   ├── mod.rs
-    │   ├── auth_service.rs
-    │   ├── account_service.rs
-    │   ├── transfer_service.rs
-    │   ├── audit_service.rs
-    │   ├── loan_service.rs
-    │   └── admin_service.rs
-    └── handlers/
-        ├── mod.rs
-        ├── home.rs             # Platform Lead, the `/` landing
-        ├── auth.rs
-        ├── accounts.rs
-        ├── transfers.rs
-        ├── loans.rs
-        └── admin.rs
-```
+The tutorial lists four concepts: **encapsulation, traits, polymorphism, and
+concurrency safety (Arc/Mutex)**. Mapping each to the code:
 
----
+| Concept | Where it lives |
+|---|---|
+| **Encapsulation** | Each `Pg…Service` keeps its fields **private** (`db`, `audit`, `rate_limit`, the admin's injected services). Callers only touch the trait methods — they know nothing about SQL or the pool. Internal-only details (`otp_hash`, the `PendingRow`, `hash_password`) are never exposed on public types. |
+| **Traits (abstraction / shared interface)** | Six service traits — `AuthService`, `AccountService`, `TransferService`, `LoanService`, `AuditService`, `AdminService` — define behaviour; `Pg…` structs implement it. This is the tutorial's "trait = common interface" pattern. |
+| **Polymorphism** | *Dynamic dispatch:* services are used as `Arc<dyn Trait>` / `web::Data<dyn Trait>`, so handlers depend on the abstraction and an impl is swappable (e.g. a mock in tests). *Parametric:* `fn render<T: Template>(t: T)`. *Ad-hoc:* enums (`Role`, `AccountStatus`, …) carry behaviour via `impl` (`label()`, `badge()`). |
+| **Inheritance (Rust-style)** | Traits use **supertraits** (`pub trait TransferService: Send + Sync`). Rust has no class inheritance; trait composition + the `AdminService` *composing* the other services (`with_services(...)`) is the idiomatic substitute. |
+| **Concurrency (Arc + Mutex)** | The transfer engine holds an `Arc`-shared, `tokio::sync::Mutex`-guarded rate-limit map, layered on top of database row locks (below). |
 
-## What the Platform Lead publishes
+### A note on the tutorial's account-type example
 
-These are the types and functions teammates import. Stable surface — anything else is internal.
+The slides illustrate polymorphism with `SavingsAccount` / `CurrentAccount` /
+`BusinessAccount` structs each implementing a `BankAccount` trait. FerroBank models
+account variety with an **`AccountType` enum** plus behaviour in `AccountService`
+(layered architecture), and gets its polymorphism at the **service layer** via
+`dyn` traits instead. Both are valid OOP; the difference is *where* the polymorphism
+sits. (If subtype-style polymorphism is wanted explicitly, a small `AccountKind`
+trait implemented by per-type structs can be added — see the README's roadmap.)
 
-### `AppState`
-```rust
-pub struct AppState {
-    pub db: PgPool,
-    pub config: Arc<Config>,
-}
-```
-Available in any handler via `data: web::Data<AppState>`.
+### Mapping to the tutorial's four "core objects"
 
-### `AppError`
-```rust
-pub enum AppError {
-    NotFound(String),
-    Unauthorized,
-    Forbidden,
-    BadRequest(String),
-    Conflict(String),       // e.g., insufficient funds
-    Internal(anyhow::Error),
-}
-```
-Implements `actix_web::ResponseError` so returning it from a handler renders the right HTTP status and an error page. Has `From<sqlx::Error>` and `From<anyhow::Error>` so `?` just works.
-
-### `CurrentUser`
-```rust
-pub struct CurrentUser {
-    pub id: i64,
-    pub email: String,
-    pub role: Role,
-}
-```
-An Actix `FromRequest` extractor. Put it in any handler signature where you need the logged-in user:
-```rust
-async fn my_handler(user: CurrentUser, ...) -> Result<HttpResponse, AppError> { ... }
-```
-If the session cookie is missing or invalid, the extractor returns `AppError::Unauthorized`, which redirects to `/login`.
-
-### `RequireRole`
-```rust
-pub struct RequireRole(pub Role);
-```
-A guard you compose around admin-only handlers:
-```rust
-cfg.service(
-    web::scope("/admin")
-        .guard(RequireRole(Role::Admin))
-        .route("/dashboard", web::get().to(handlers::admin::dashboard))
-);
-```
-
----
-
-## How a module plugs in
-
-Each module owner writes their handlers, services, models, and templates. Then they make **one** change to expose their routes:
-
-In `src/handlers/<your_module>.rs`, define and export:
-
-```rust
-pub fn routes(cfg: &mut web::ServiceConfig) {
-    cfg.service(
-        web::scope("/accounts")
-            .route("", web::get().to(list))
-            .route("/new", web::get().to(new_form))
-            .route("/new", web::post().to(create))
-            .route("/{id}", web::get().to(detail)),
-    );
-}
-```
-
-The Platform Lead's `src/routes.rs` mounts everything:
-
-```rust
-pub fn configure(cfg: &mut web::ServiceConfig) {
-    handlers::home::routes(cfg);
-    handlers::auth::routes(cfg);
-    handlers::accounts::routes(cfg);
-    handlers::transfers::routes(cfg);
-    handlers::loans::routes(cfg);
-    handlers::admin::routes(cfg);
-}
-```
-
-You never edit `routes.rs` (except the Platform Lead). You only add your handler to the `pub use` chain in `src/handlers/mod.rs` and declare your module in `src/services/mod.rs` and `src/models/mod.rs`.
-
----
-
-## How services work (the OOP part)
-
-Every domain operation lives behind a trait, not bare functions. Example:
-
-```rust
-// src/services/account_service.rs
-#[async_trait::async_trait]
-pub trait AccountService: Send + Sync {
-    async fn open_account(&self, user_id: i64, kind: AccountType) -> Result<Account, AppError>;
-    async fn get_balance(&self, account_id: i64) -> Result<Decimal, AppError>;
-    async fn list_for_user(&self, user_id: i64) -> Result<Vec<Account>, AppError>;
-}
-
-pub struct PgAccountService { pub db: PgPool }
-
-#[async_trait::async_trait]
-impl AccountService for PgAccountService {
-    async fn open_account(&self, user_id: i64, kind: AccountType) -> Result<Account, AppError> {
-        // sqlx::query_as!(...)
-    }
-    // ...
-}
-```
-
-In `main.rs`, the Platform Lead builds and registers the concrete impl:
-
-```rust
-let account_service: Arc<dyn AccountService> = Arc::new(PgAccountService { db: pool.clone() });
-App::new()
-    .app_data(web::Data::from(account_service))
-    // ...
-```
-
-Handlers then pull it in by trait, not concrete type:
-
-```rust
-async fn list(
-    svc: web::Data<dyn AccountService>,
-    user: CurrentUser,
-) -> Result<HttpResponse, AppError> {
-    let accounts = svc.list_for_user(user.id).await?;
-    // render template
-}
-```
-
-This pattern gives you:
-
-- **Polymorphism** — swap `PgAccountService` for `MockAccountService` in unit tests
-- **Encapsulation** — handlers know nothing about SQL
-- **Open/closed** — adding a `SqliteAccountService` later doesn't touch handlers
-- A clean answer when the grader asks "where's the OOP?"
+| Tutorial object | FerroBank realisation |
+|---|---|
+| `BankAccount` (id, owner, balance, status) | `models::account::Account` + `AccountService` (open/approve/freeze/close/adjust/balance) |
+| `MoneyTransfer` (from, to, amount, status, timestamp) | `models::transfer::Transfer` + `TransferService` (create → confirm) |
+| `TransferEngine` (accounts, logs, rules) | `PgTransferService` — the engine: Mutex rate-limiter + `FOR UPDATE` row locks + fraud/business rules + audit |
+| `AuditLog` (transfer_id, action, timestamp, result) | `models`/`AuditService` `audit_log` table, written on every state change |
 
 ---
 
 ## Concurrency layers
 
-The v1.2 spec emphasises that the banking domain must demonstrate **both** database-level
-and application-level concurrency control. FerroBank uses two layers, each with a distinct job:
+The banking domain must show **both** database- and application-level concurrency control.
 
 | Layer | Primitive | Protects against |
 |---|---|---|
-| Database | `SELECT … FOR UPDATE` inside a `BEGIN / COMMIT` transaction | Lost updates between concurrent SQL processes, partial money moves, durability after crash |
-| Application (Rust) | `tokio::sync::Mutex` / `tokio::sync::RwLock` wrapped in `Arc` | OTP cache races, in-process rate-limit counters, in-flight transfer guards, login-attempt counters |
+| Database | `SELECT … FOR UPDATE` inside a `BEGIN/COMMIT` transaction; explicit `rollback()` on failure | Lost updates, partial money moves, double-spend, negative balances |
+| Application (Rust) | `tokio::sync::Mutex<HashMap<…>>` behind `Arc` | Per-account rate-limit bursts before they reach the DB |
 
-**Lock ordering rule:** always acquire account locks in ascending `id` order to avoid deadlocks
-when two concurrent transfers touch the same pair of accounts in opposite directions.
+**Lock ordering:** account rows are always locked in ascending `id` order to avoid
+deadlocks when two transfers touch the same pair in opposite directions.
 
-The report must explain which layer protects which invariant and why both are needed.
+**Atomicity is explicit:** in `TransferService::confirm`, the debit + credit + finalize
+run through `apply_money_move`; on any error the code calls `tx.rollback()` and returns,
+so a partial debit can never be committed.
+
+---
+
+## Key domain workflows
+
+- **Money transfer (two-step + OTP):** `create` validates, rate-limits (Mutex), generates a
+  6-digit OTP (argon2-hashed in the DB), inserts a `pending` row. `confirm` verifies the OTP,
+  locks both accounts `FOR UPDATE`, re-checks status/balance, moves money in one transaction,
+  audits. Rejections store a human-readable `status_reason`.
+- **Account approval:** a customer self-opening creates a `pending` account; a **teller or admin**
+  approves it to `active` (`/staff/accounts`). Admin-opened accounts are active immediately.
+  A DB trigger enforces that only **customers** may own accounts.
+- **Loan dual approval:** a pending loan needs **one teller approval AND one admin approval**
+  (two distinct roles, tracked in `loan_approvals`) before it becomes `approved`.
+- **Loan repayment:** debits a chosen funding account inside the same transaction that records
+  the repayment; refuses if the account is inactive or underfunded.
+- **Fraud signals (dashboard):** rejected transfers, large transfers (≥ $10k), structuring
+  (≥ $9k, just under threshold), and velocity (4+ transfers from one account in 24h).
+
+---
+
+## Roles & access (RBAC)
+
+| Area | Guard | Who |
+|---|---|---|
+| `/accounts`, `/transfers`, `/loans` (customer views) | `CurrentUser` | logged-in users |
+| `/admin/*` (dashboard, audit, account mutations) | `RequireRole(Admin)` | admin only |
+| `/staff/*` (all accounts + approve, all transfers) | `RequireRole(Teller)` | teller **and** admin (admin is a superuser in the guard) |
+
+Post-login routing: admin → `/admin/dashboard`, teller → `/loans`, customer → `/accounts`.
+
+---
+
+## Stable surface (the platform contract)
+
+### `AppState` — `web::Data<AppState>`
+```rust
+pub struct AppState { pub db: PgPool, pub config: Arc<Config> }
+```
+
+### `AppError` — one error type, implements `ResponseError`
+`NotFound | Unauthorized | Forbidden | BadRequest | Conflict | Internal`. `?` maps it to the
+right HTTP status (and `Unauthorized` redirects to `/login`). Has `From<sqlx::Error>` etc.
+
+### `CurrentUser` — extractor
+Drop into a handler to require login; use `Option<CurrentUser>` for "maybe logged in" (e.g. the
+landing page). Missing/invalid session → `AppError::Unauthorized` → redirect to `/login`.
+
+### `RequireRole(Role)` — scope guard, applied with `.wrap(...)`
+```rust
+web::scope("/admin").wrap(RequireRole(Role::Admin)) // admin only
+web::scope("/staff").wrap(RequireRole(Role::Teller)) // teller + admin
+```
+
+---
+
+## Service pattern (the OOP core)
+
+```rust
+#[async_trait::async_trait]
+pub trait AccountService: Send + Sync {
+    async fn open_account(&self, user_id: i64, kind: AccountType, approved: bool) -> Result<Account, AppError>;
+    async fn approve_account(&self, account_id: i64) -> Result<(), AppError>;
+    // ...
+}
+
+pub struct PgAccountService { db: PgPool }   // private field — encapsulated
+
+#[async_trait::async_trait]
+impl AccountService for PgAccountService { /* SQLx queries */ }
+```
+
+`main.rs` builds each concrete impl once as `Arc<dyn Trait>` and registers it as `web::Data`;
+handlers extract by trait (`web::Data<dyn AccountService>`). `PgAdminService` is built last and
+the others are injected via `with_services(...)`.
 
 ---
 
 ## Database conventions
 
-- Tables in `snake_case`, plural (`accounts`, `transfers`).
-- Every table has `id BIGSERIAL PRIMARY KEY` and `created_at TIMESTAMPTZ NOT NULL DEFAULT now()`.
-- Foreign keys are `<table>_id BIGINT NOT NULL REFERENCES <table>(id)`.
-- Money columns are `NUMERIC(18,2) NOT NULL`. Map to `rust_decimal::Decimal`.
-- Use `sqlx::query!` and `sqlx::query_as!` macros — compile-time SQL checking against the real schema.
-
----
-
-## Template conventions
-
-Every page:
-
-```html
-{% extends "layout.html" %}
-
-{% block title %}Accounts · FerroBank{% endblock %}
-
-{% block content %}
-  <h1>Your accounts</h1>
-  ...
-{% endblock %}
-```
-
-The base layout provides nav, current-user chip, flash messages, and the Tailwind CDN tag. Don't reinvent it per module.
+- `snake_case` plural tables; every table has `id BIGSERIAL PRIMARY KEY` and `created_at TIMESTAMPTZ`.
+- Foreign keys `<table>_id BIGINT REFERENCES <table>(id)`.
+- Money is `NUMERIC(18,2)` ↔ `rust_decimal::Decimal` (never `f64`).
+- Queries use **runtime** `sqlx::query` / `sqlx::query_as` (no compile-time macros, so no live DB
+  or `.sqlx` cache is needed to build — see the Dockerfile).
+- Migrations live in `migrations/` and are applied automatically on startup by both the app and
+  the seed binary.
 
 ---
 
 ## Local development
 
-```bash
-docker compose up -d db          # starts Postgres on localhost:5432
-cp .env.example .env
-sqlx database create
-sqlx migrate run
-cargo run
-```
-
-Open <http://localhost:8080>.
-
-The pre-prepared SQLx offline cache: when you add new SQL queries, run `cargo sqlx prepare` and commit the resulting `.sqlx/` directory so CI can build without a live DB.
+See **[README.md](./README.md)** for the full Docker and local run instructions. In short:
+`docker compose up --build` starts Postgres + app + seed; migrations apply automatically.

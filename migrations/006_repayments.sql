@@ -10,6 +10,9 @@ CREATE TABLE repayments (
     id          BIGSERIAL PRIMARY KEY,
     loan_id     BIGINT          NOT NULL REFERENCES loans(id) ON DELETE RESTRICT,
     amount      NUMERIC(18, 2)  NOT NULL,
+    -- Account the repayment was drawn from. The loan service debits this account
+    -- in the same transaction it records the repayment. NULL only for legacy rows.
+    account_id  BIGINT          REFERENCES accounts(id) ON DELETE SET NULL,
     paid_at     TIMESTAMPTZ     NOT NULL DEFAULT now(),
 
     CONSTRAINT positive_repayment CHECK (amount > 0)

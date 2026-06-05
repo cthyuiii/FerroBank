@@ -16,8 +16,10 @@ use serde::Deserialize;
 use crate::errors::AppError;
 use crate::middleware::auth::CurrentUser;
 use crate::models::account::{Account, AccountStatus, AccountType};
+use crate::models::loan::LoanStatus;
 use crate::models::user::Role;
 use crate::services::account_service::AccountService;
+use crate::services::loan_service::LoanService;
 use crate::view::LayoutCtx;
 
 pub fn routes(cfg: &mut web::ServiceConfig) {
@@ -39,7 +41,14 @@ pub fn routes(cfg: &mut web::ServiceConfig) {
 struct ListTemplate {
     layout: LayoutCtx,
     accounts: Vec<Account>,
+    /// Sum of active account balances.
     total_balance: Decimal,
+    /// Sum of outstanding balances across the user's active/approved loans.
+    total_outstanding: Decimal,
+    /// total_balance − total_outstanding.
+    net_worth: Decimal,
+    /// True when net worth is zero or positive (green) vs negative (red).
+    net_worth_positive: bool,
 }
 
 #[derive(Template)]
@@ -55,6 +64,8 @@ struct DetailTemplate {
     layout: LayoutCtx,
     account: Account,
     can_manage: bool,
+    /// Staff (teller/admin) — only they may freeze an account.
+    is_staff: bool,
 }
 
 // ── Form payloads ────────────────────────────────────────────────────
@@ -68,6 +79,7 @@ struct NewAccountForm {
 
 async fn list(
     svc: web::Data<dyn AccountService>,
+    loan_svc: web::Data<dyn LoanService>,
     user: CurrentUser,
 ) -> Result<HttpResponse, AppError> {
     let accounts = svc.list_for_user(user.id).await?;
@@ -77,10 +89,24 @@ async fn list(
         .map(|a| a.balance)
         .sum();
 
+    // Sum what the user still owes across their live loans.
+    let loans = loan_svc.list_for_user(user.id).await?;
+    let mut total_outstanding = Decimal::ZERO;
+    for l in &loans {
+        if l.status == LoanStatus::Approved || l.status == LoanStatus::Active {
+            total_outstanding += loan_svc.outstanding_balance(l.id).await?;
+        }
+    }
+    let net_worth = total_balance - total_outstanding;
+    let net_worth_positive = net_worth >= Decimal::ZERO;
+
     render(ListTemplate {
         layout: LayoutCtx::from_user(Some(&user)),
         accounts,
         total_balance,
+        total_outstanding,
+        net_worth,
+        net_worth_positive,
     })
 }
 
@@ -107,7 +133,8 @@ async fn create(
         }
     };
 
-    let account = svc.open_account(user.id, kind).await?;
+    // Customer self-opens are created pending — a teller/admin must approve.
+    let account = svc.open_account(user.id, kind, false).await?;
 
     Ok(HttpResponse::Found()
         .insert_header(("Location", format!("/accounts/{}", account.id)))
@@ -129,11 +156,14 @@ async fn detail(
 
     // Owners always see manage buttons; staff also see them on any account.
     let can_manage = account.user_id == user.id || user.role != Role::Customer;
+    // Only staff may freeze an account — normal users must not see that option.
+    let is_staff = user.role != Role::Customer;
 
     render(DetailTemplate {
         layout: LayoutCtx::from_user(Some(&user)),
         account,
         can_manage,
+        is_staff,
     })
 }
 

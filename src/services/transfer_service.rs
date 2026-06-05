@@ -76,8 +76,10 @@ pub trait TransferService: Send + Sync {
 }
 
 pub struct PgTransferService {
-    pub db: PgPool,
-    pub audit: Arc<dyn AuditService>,
+    // All state is private — handlers depend only on the `TransferService` trait,
+    // never on these fields. This is the encapsulation boundary.
+    db: PgPool,
+    audit: Arc<dyn AuditService>,
     /// Per-account rolling list of recent attempt timestamps, gated by an
     /// async-aware Mutex. See module docs for why this lives alongside the
     /// database row locks.
@@ -356,28 +358,24 @@ impl TransferService for PgTransferService {
         }
 
         // (5) Move money + finalize transfer, all inside the same transaction.
-        sqlx::query(r#"UPDATE accounts SET balance = balance - $1 WHERE id = $2"#)
-            .bind(pending.amount)
-            .bind(pending.from_account_id)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query(r#"UPDATE accounts SET balance = balance + $1 WHERE id = $2"#)
-            .bind(pending.amount)
-            .bind(pending.to_account_id)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query(
-            r#"
-            UPDATE transfers
-            SET status = 'completed',
-                confirmed_at = now(),
-                otp_hash = NULL
-            WHERE id = $1
-            "#,
+        //
+        // We run the three writes through a helper and roll back EXPLICITLY if
+        // any of them fails. (sqlx also rolls back automatically when a `tx` is
+        // dropped without committing, but doing it explicitly makes the
+        // atomicity guarantee visible: a partial debit can never be committed.)
+        if let Err(e) = apply_money_move(
+            &mut tx,
+            pending.from_account_id,
+            pending.to_account_id,
+            pending.amount,
+            transfer_id,
         )
-        .bind(transfer_id)
-        .execute(&mut *tx)
-        .await?;
+        .await
+        {
+            tx.rollback().await?;
+            tracing::warn!(transfer_id, error = %e, "transfer rolled back");
+            return Err(e);
+        }
 
         tx.commit().await?;
 
@@ -458,6 +456,39 @@ impl TransferService for PgTransferService {
         .await?;
         Ok(rows)
     }
+}
+
+/// The three writes that make up a completed transfer: debit the sender, credit
+/// the recipient, and finalize the transfer row. Kept in one place so `confirm`
+/// can wrap it in an explicit rollback-on-error.
+async fn apply_money_move(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    from_account_id: i64,
+    to_account_id: i64,
+    amount: Decimal,
+    transfer_id: i64,
+) -> Result<(), AppError> {
+    sqlx::query(r#"UPDATE accounts SET balance = balance - $1 WHERE id = $2"#)
+        .bind(amount)
+        .bind(from_account_id)
+        .execute(&mut **tx)
+        .await?;
+    sqlx::query(r#"UPDATE accounts SET balance = balance + $1 WHERE id = $2"#)
+        .bind(amount)
+        .bind(to_account_id)
+        .execute(&mut **tx)
+        .await?;
+    sqlx::query(
+        r#"
+        UPDATE transfers
+        SET status = 'completed', confirmed_at = now(), otp_hash = NULL
+        WHERE id = $1
+        "#,
+    )
+    .bind(transfer_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 /// Tiny helper to keep the rejection paths in `confirm()` readable. Records the

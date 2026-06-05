@@ -17,12 +17,30 @@
     </p>
 
     <div class="mt-8 flex flex-wrap gap-3">
-      <a href="/register" class="px-5 py-2.5 rounded-md bg-amber-700 text-white font-medium hover:bg-amber-800 transition">
-        Open an account
-      </a>
-      <a href="/login" class="px-5 py-2.5 rounded-md border border-stone-300 bg-white text-stone-700 hover:border-stone-400 transition">
-        Sign in
-      </a>
+      {% if let Some(u) = layout.user %}
+        {% if u.role == "admin" %}
+          <a href="/admin/dashboard" class="px-5 py-2.5 rounded-md bg-amber-700 text-white font-medium hover:bg-amber-800 transition">
+            Open admin dashboard
+          </a>
+          <a href="/staff/transfers" class="px-5 py-2.5 rounded-md border border-stone-300 bg-white text-stone-700 hover:border-stone-400 transition">
+            View all transfers
+          </a>
+        {% else %}
+          <a href="/accounts" class="px-5 py-2.5 rounded-md bg-amber-700 text-white font-medium hover:bg-amber-800 transition">
+            Go to my accounts
+          </a>
+          <a href="/transfers" class="px-5 py-2.5 rounded-md border border-stone-300 bg-white text-stone-700 hover:border-stone-400 transition">
+            Make a transfer
+          </a>
+        {% endif %}
+      {% else %}
+        <a href="/register" class="px-5 py-2.5 rounded-md bg-amber-700 text-white font-medium hover:bg-amber-800 transition">
+          Open an account
+        </a>
+        <a href="/login" class="px-5 py-2.5 rounded-md border border-stone-300 bg-white text-stone-700 hover:border-stone-400 transition">
+          Sign in
+        </a>
+      {% endif %}
     </div>
   </div>
 </section>

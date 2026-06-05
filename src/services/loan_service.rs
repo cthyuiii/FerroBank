@@ -55,11 +55,13 @@ pub trait LoanService: Send + Sync {
 
     // ── Admin Dashboard hooks ────────────────────────────────────────
     async fn pending_applications(&self) -> Result<Vec<Loan>, AppError>;
+    /// Every loan in the bank, newest first — the staff loan view.
+    async fn list_all(&self) -> Result<Vec<Loan>, AppError>;
     async fn portfolio_outstanding(&self) -> Result<Decimal, AppError>;
 }
 
 pub struct PgLoanService {
-    pub db: PgPool,
+    db: PgPool,
 }
 
 impl PgLoanService {
@@ -425,6 +427,19 @@ impl LoanService for PgLoanService {
             FROM loans
             WHERE status = 'pending'
             ORDER BY created_at ASC
+            "#,
+        )
+        .fetch_all(&self.db)
+        .await?;
+        Ok(rows)
+    }
+
+    async fn list_all(&self) -> Result<Vec<Loan>, AppError> {
+        let rows = sqlx::query_as::<_, Loan>(
+            r#"
+            SELECT id, user_id, principal, interest_rate, term_months, status, created_at
+            FROM loans
+            ORDER BY created_at DESC
             "#,
         )
         .fetch_all(&self.db)

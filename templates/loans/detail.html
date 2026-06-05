@@ -7,6 +7,12 @@
   <a href="/loans" class="text-sm text-stone-600 hover:text-amber-700">← All loans</a>
 </div>
 
+{% if let Some(msg) = error %}
+  <div class="mb-6 p-3 rounded-md bg-red-50 border border-red-200 text-sm text-red-800">
+    {{ msg }}
+  </div>
+{% endif %}
+
 <!-- Hero -->
 <section class="p-6 rounded-lg border border-stone-200 bg-white">
   <div class="flex items-start justify-between flex-wrap gap-4">

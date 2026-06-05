@@ -5,17 +5,38 @@
 {% block content %}
 <div class="flex items-center justify-between mb-6 flex-wrap gap-3">
   <div>
-    <span class="text-xs font-semibold uppercase tracking-wider text-amber-700">Admin</span>
+    <span class="text-xs font-semibold uppercase tracking-wider text-amber-700">Staff</span>
     <h1 class="text-3xl font-semibold text-stone-900 mt-1">All transfers</h1>
-    <p class="mt-1 text-sm text-stone-600">{{ transfers.len() }} most recent transfers.</p>
+    <p class="mt-1 text-sm text-stone-600">{{ transfers.len() }} transfer{% if transfers.len() != 1 %}s{% endif %} shown.</p>
   </div>
   <nav class="flex items-center gap-4 text-sm">
-    <a href="/admin/dashboard" class="text-stone-600 hover:text-amber-700">← Dashboard</a>
-    <a href="/admin/accounts" class="text-stone-600 hover:text-amber-700">Accounts</a>
+    {% if is_admin %}
+      <a href="/admin/dashboard" class="text-stone-600 hover:text-amber-700">← Dashboard</a>
+    {% endif %}
+    <a href="/staff/accounts" class="text-stone-600 hover:text-amber-700">Accounts</a>
   </nav>
 </div>
 
-<!-- Search -->
+<!-- Date range filter (server-side query) -->
+<form method="GET" action="/staff/transfers" class="mb-4 flex flex-wrap items-end gap-3">
+  <div>
+    <label for="from" class="block text-xs font-medium text-stone-700">From date</label>
+    <input type="date" id="from" name="from" value="{{ from_date }}"
+           class="mt-1 px-3 py-2 rounded-md border border-stone-300 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-amber-700 focus:border-amber-700">
+  </div>
+  <div>
+    <label for="to" class="block text-xs font-medium text-stone-700">To date</label>
+    <input type="date" id="to" name="to" value="{{ to_date }}"
+           class="mt-1 px-3 py-2 rounded-md border border-stone-300 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-amber-700 focus:border-amber-700">
+  </div>
+  <button type="submit"
+          class="px-4 py-2 rounded-md bg-amber-700 text-white text-sm font-medium hover:bg-amber-800 transition">
+    Apply
+  </button>
+  <a href="/staff/transfers" class="px-3 py-2 text-sm text-stone-600 hover:text-amber-700">Clear</a>
+</form>
+
+<!-- Text search (client-side, filters the loaded rows) -->
 <div class="mb-4">
   <input
     type="search"
@@ -45,12 +66,12 @@
           <tr>
             <td class="px-4 py-3 text-stone-500 whitespace-nowrap">{{ t.created_at.format("%Y-%m-%d %H:%M") }}</td>
             <td class="px-4 py-3">
-              <div class="text-stone-900">{{ t.from_owner }}</div>
-              <div class="text-xs font-mono text-stone-500">#{{ t.from_account_id }} · {{ t.from_number }}</div>
+              <div class="text-stone-900">{{ t.from_owner }} <span class="text-stone-400 font-mono text-xs">(#{{ t.from_user_id }})</span></div>
+              <div class="text-xs font-mono text-stone-500">acct #{{ t.from_account_id }} · {{ t.from_number }}</div>
             </td>
             <td class="px-4 py-3">
-              <div class="text-stone-900">{{ t.to_owner }}</div>
-              <div class="text-xs font-mono text-stone-500">#{{ t.to_account_id }} · {{ t.to_number }}</div>
+              <div class="text-stone-900">{{ t.to_owner }} <span class="text-stone-400 font-mono text-xs">(#{{ t.to_user_id }})</span></div>
+              <div class="text-xs font-mono text-stone-500">acct #{{ t.to_account_id }} · {{ t.to_number }}</div>
             </td>
             <td class="px-4 py-3 text-right font-mono text-stone-900">${{ t.amount }}</td>
             <td class="px-4 py-3">

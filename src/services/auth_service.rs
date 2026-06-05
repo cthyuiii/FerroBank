@@ -23,7 +23,8 @@ pub trait AuthService: Send + Sync {
 }
 
 pub struct PgAuthService {
-    pub db: PgPool,
+    // Private: callers go through the trait methods, never the pool directly.
+    db: PgPool,
 }
 
 impl PgAuthService {

@@ -18,13 +18,7 @@
         {{ account.account_number }}
       </h1>
       <div class="mt-2">
-        {% if account.status == AccountStatus::Active %}
-          <span class="text-xs px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">{{ account.status.label() }}</span>
-        {% else if account.status == AccountStatus::Frozen %}
-          <span class="text-xs px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">{{ account.status.label() }}</span>
-        {% else %}
-          <span class="text-xs px-2 py-0.5 rounded-full bg-stone-100 text-stone-600 border border-stone-200">{{ account.status.label() }}</span>
-        {% endif %}
+        <span class="text-xs px-2 py-0.5 rounded-full border {{ account.status.badge() }}">{{ account.status.label() }}</span>
       </div>
     </div>
     <div class="text-right">
@@ -33,6 +27,12 @@
     </div>
   </div>
 </section>
+
+{% if account.status == AccountStatus::Pending %}
+  <section class="mt-4 p-4 rounded-lg border border-blue-200 bg-blue-50 text-sm text-blue-700">
+    This account is awaiting staff approval. You'll be able to use it once a teller or admin approves it.
+  </section>
+{% endif %}
 
 <!-- Metadata grid -->
 <section class="grid sm:grid-cols-3 gap-4 mt-4">
@@ -70,22 +70,24 @@
     <h2 class="text-sm font-semibold uppercase tracking-wider text-stone-500 mb-3">Manage account</h2>
 
     <div class="rounded-lg border border-stone-200 bg-white divide-y divide-stone-100">
-      {% if account.status == AccountStatus::Active %}
-        <div class="p-4 flex items-center justify-between flex-wrap gap-3">
-          <div>
-            <div class="font-medium text-stone-900">Freeze this account</div>
-            <div class="text-sm text-stone-600">
-              Prevents new transfers until a staff member unfreezes it. Staff only.
+      {% if is_staff %}
+        {% if account.status == AccountStatus::Active %}
+          <div class="p-4 flex items-center justify-between flex-wrap gap-3">
+            <div>
+              <div class="font-medium text-stone-900">Freeze this account</div>
+              <div class="text-sm text-stone-600">
+                Prevents new transfers until a staff member unfreezes it. Staff only.
+              </div>
             </div>
+            <form action="/accounts/{{ account.id }}/freeze" method="POST">
+              <button type="submit"
+                      class="px-3 py-1.5 rounded-md border border-amber-300 bg-white text-sm font-medium text-amber-800 hover:bg-amber-50 transition"
+                      onclick="return confirm('Freeze account {{ account.account_number }}?');">
+                Freeze
+              </button>
+            </form>
           </div>
-          <form action="/accounts/{{ account.id }}/freeze" method="POST">
-            <button type="submit"
-                    class="px-3 py-1.5 rounded-md border border-amber-300 bg-white text-sm font-medium text-amber-800 hover:bg-amber-50 transition"
-                    onclick="return confirm('Freeze account {{ account.account_number }}?');">
-              Freeze
-            </button>
-          </form>
-        </div>
+        {% endif %}
       {% endif %}
 
       {% if account.status != AccountStatus::Closed %}

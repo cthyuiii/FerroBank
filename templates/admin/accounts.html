@@ -1,30 +1,33 @@
 {% extends "layout.html" %}
 
-{% block title %}All accounts · Admin · FerroBank{% endblock %}
+{% block title %}All accounts · FerroBank{% endblock %}
 
 {% block content %}
 <div class="flex items-center justify-between mb-6 flex-wrap gap-3">
   <div>
-    <span class="text-xs font-semibold uppercase tracking-wider text-amber-700">Admin</span>
+    <span class="text-xs font-semibold uppercase tracking-wider text-amber-700">Staff</span>
     <h1 class="text-3xl font-semibold text-stone-900 mt-1">All accounts</h1>
     <p class="mt-1 text-sm text-stone-600">{{ accounts.len() }} accounts across the bank.</p>
   </div>
   <nav class="flex items-center gap-4 text-sm">
-    <a href="/admin/dashboard" class="text-stone-600 hover:text-amber-700">← Dashboard</a>
-    <a href="/admin/transfers" class="text-stone-600 hover:text-amber-700">Transfers</a>
+    {% if is_admin %}
+      <a href="/admin/dashboard" class="text-stone-600 hover:text-amber-700">← Dashboard</a>
+    {% endif %}
+    <a href="/staff/transfers" class="text-stone-600 hover:text-amber-700">Transfers</a>
   </nav>
 </div>
 
-<!-- Open an account on behalf of a customer -->
+{% if is_admin %}
+<!-- Open an account on behalf of a customer (admin only) -->
 <section class="mb-6 p-5 rounded-lg border border-stone-200 bg-white">
-  <h2 class="font-semibold text-stone-900">Open an account for a user</h2>
+  <h2 class="font-semibold text-stone-900">Open an account for a customer</h2>
   <form action="/admin/accounts/open" method="POST" class="mt-3 flex flex-wrap items-end gap-3">
     <div class="min-w-[240px]">
       <label for="user_id" class="block text-xs font-medium text-stone-700">Customer</label>
       <select id="user_id" name="user_id" required
               class="mt-1 w-full px-3 py-2 rounded-md border border-stone-300 bg-white focus:outline-none focus:ring-2 focus:ring-amber-700 focus:border-amber-700">
         {% for u in users %}
-          <option value="{{ u.id }}">{{ u.full_name }} · {{ u.email }} ({{ u.role.label() }})</option>
+          <option value="{{ u.id }}">{{ u.full_name }} (#{{ u.id }}) · {{ u.email }}</option>
         {% endfor %}
       </select>
     </div>
@@ -42,6 +45,7 @@
     </button>
   </form>
 </section>
+{% endif %}
 
 <!-- Search -->
 <div class="mb-4">
@@ -72,7 +76,7 @@
         {% for a in accounts %}
           <tr>
             <td class="px-4 py-3">
-              <div class="text-stone-900">{{ a.owner_name }}</div>
+              <div class="text-stone-900">{{ a.owner_name }} <span class="text-stone-400 font-mono text-xs">(#{{ a.user_id }})</span></div>
               <div class="text-xs text-stone-500">{{ a.owner_email }}</div>
             </td>
             <td class="px-4 py-3 font-mono text-stone-700">#{{ a.id }} · {{ a.account_number }}</td>
@@ -83,28 +87,37 @@
             <td class="px-4 py-3 text-right font-mono text-stone-900">${{ a.balance }}</td>
             <td class="px-4 py-3">
               <div class="flex flex-wrap items-center gap-2">
-                {% if a.status.label() == "Frozen" %}
-                  <form action="/admin/accounts/{{ a.id }}/unfreeze" method="POST">
-                    <button class="text-xs px-2 py-1 rounded border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 transition">Unfreeze</button>
-                  </form>
-                {% else if a.status.label() == "Active" %}
-                  <form action="/admin/accounts/{{ a.id }}/freeze" method="POST">
-                    <button class="text-xs px-2 py-1 rounded border border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100 transition">Freeze</button>
+                {# Approve is available to all staff for a pending account. #}
+                {% if a.status.label() == "Pending approval" %}
+                  <form action="/staff/accounts/{{ a.id }}/approve" method="POST">
+                    <button class="text-xs px-2 py-1 rounded border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 transition">Approve</button>
                   </form>
                 {% endif %}
 
-                {% if a.status.label() != "Closed" %}
-                  <form action="/admin/accounts/{{ a.id }}/close" method="POST"
-                        onsubmit="return confirm('Close this account? It must have a zero balance.');">
-                    <button class="text-xs px-2 py-1 rounded border border-red-200 bg-white text-red-700 hover:bg-red-50 transition">Close</button>
-                  </form>
+                {% if is_admin %}
+                  {% if a.status.label() == "Frozen" %}
+                    <form action="/admin/accounts/{{ a.id }}/unfreeze" method="POST">
+                      <button class="text-xs px-2 py-1 rounded border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 transition">Unfreeze</button>
+                    </form>
+                  {% else if a.status.label() == "Active" %}
+                    <form action="/admin/accounts/{{ a.id }}/freeze" method="POST">
+                      <button class="text-xs px-2 py-1 rounded border border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100 transition">Freeze</button>
+                    </form>
+                  {% endif %}
 
-                  <form action="/admin/accounts/{{ a.id }}/adjust" method="POST" class="flex items-center gap-1">
-                    <input type="text" name="delta" required inputmode="decimal"
-                           placeholder="±50.00" pattern="-?\d+(\.\d{1,2})?"
-                           class="w-24 px-2 py-1 rounded border border-stone-300 bg-white font-mono text-xs focus:outline-none focus:ring-2 focus:ring-amber-700 focus:border-amber-700">
-                    <button class="text-xs px-2 py-1 rounded border border-stone-300 bg-white text-stone-700 hover:border-stone-400 transition">Adjust</button>
-                  </form>
+                  {% if a.status.label() != "Closed" %}
+                    <form action="/admin/accounts/{{ a.id }}/close" method="POST"
+                          onsubmit="return confirm('Close this account? It must have a zero balance.');">
+                      <button class="text-xs px-2 py-1 rounded border border-red-200 bg-white text-red-700 hover:bg-red-50 transition">Close</button>
+                    </form>
+
+                    <form action="/admin/accounts/{{ a.id }}/adjust" method="POST" class="flex items-center gap-1">
+                      <input type="text" name="delta" required inputmode="decimal"
+                             placeholder="±50.00" pattern="-?\d+(\.\d{1,2})?"
+                             class="w-24 px-2 py-1 rounded border border-stone-300 bg-white font-mono text-xs focus:outline-none focus:ring-2 focus:ring-amber-700 focus:border-amber-700">
+                      <button class="text-xs px-2 py-1 rounded border border-stone-300 bg-white text-stone-700 hover:border-stone-400 transition">Adjust</button>
+                    </form>
+                  {% endif %}
                 {% endif %}
               </div>
             </td>

@@ -31,3 +31,23 @@ CREATE TABLE loans (
 
 CREATE INDEX loans_user_id_idx      ON loans (user_id, created_at DESC);
 CREATE INDEX loans_status_idx       ON loans (status);
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Dual approval ledger.
+--
+-- A loan only moves from 'pending' to 'approved' once it has collected BOTH a
+-- 'teller' approval and an 'admin' approval. The UNIQUE(loan_id, role) constraint
+-- allows at most one approval per role slot; since a user holds exactly one role,
+-- filling both slots guarantees two distinct people signed off.
+-- ─────────────────────────────────────────────────────────────────────────────
+CREATE TABLE loan_approvals (
+    id                BIGSERIAL    PRIMARY KEY,
+    loan_id           BIGINT       NOT NULL REFERENCES loans(id) ON DELETE CASCADE,
+    approver_user_id  BIGINT       NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    role              user_role    NOT NULL,
+    approved_at       TIMESTAMPTZ  NOT NULL DEFAULT now(),
+
+    CONSTRAINT one_approval_per_role UNIQUE (loan_id, role)
+);
+
+CREATE INDEX loan_approvals_loan_idx ON loan_approvals (loan_id);

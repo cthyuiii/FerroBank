@@ -13,11 +13,23 @@
   </a>
 </div>
 
-<!-- Total balance card -->
-<div class="p-5 rounded-lg border border-stone-200 bg-white mb-6">
-  <div class="text-xs font-medium uppercase tracking-wider text-stone-500">Total active balance</div>
-  <div class="mt-2 text-3xl font-semibold text-stone-900">${{ total_balance }}</div>
-  <div class="mt-1 text-sm text-stone-500">across {{ accounts.len() }} account{% if accounts.len() != 1 %}s{% endif %}</div>
+<!-- Summary cards: active balance, loans outstanding, net worth -->
+<div class="grid sm:grid-cols-3 gap-4 mb-6">
+  <div class="p-5 rounded-lg border border-stone-200 bg-white">
+    <div class="text-xs font-medium uppercase tracking-wider text-stone-500">Total active balance</div>
+    <div class="mt-2 text-3xl font-semibold text-emerald-700">${{ total_balance }}</div>
+    <div class="mt-1 text-sm text-stone-500">across {{ accounts.len() }} account{% if accounts.len() != 1 %}s{% endif %}</div>
+  </div>
+  <div class="p-5 rounded-lg border border-stone-200 bg-white">
+    <div class="text-xs font-medium uppercase tracking-wider text-stone-500">Loans outstanding</div>
+    <div class="mt-2 text-3xl font-semibold text-red-700">${{ total_outstanding }}</div>
+    <div class="mt-1 text-sm text-stone-500">what you still owe</div>
+  </div>
+  <div class="p-5 rounded-lg border border-stone-200 bg-white">
+    <div class="text-xs font-medium uppercase tracking-wider text-stone-500">Net worth</div>
+    <div class="mt-2 text-3xl font-semibold {% if net_worth_positive %}text-emerald-700{% else %}text-red-700{% endif %}">${{ net_worth }}</div>
+    <div class="mt-1 text-sm text-stone-500">balance minus loans</div>
+  </div>
 </div>
 
 <!-- Account list -->
@@ -49,13 +61,7 @@
             <td class="px-4 py-3 font-mono text-stone-900">{{ account.account_number }}</td>
             <td class="px-4 py-3">{{ account.kind.label() }}</td>
             <td class="px-4 py-3">
-              {% if account.status == AccountStatus::Active %}
-                <span class="text-xs px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">{{ account.status.label() }}</span>
-              {% else if account.status == AccountStatus::Frozen %}
-                <span class="text-xs px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">{{ account.status.label() }}</span>
-              {% else %}
-                <span class="text-xs px-2 py-0.5 rounded-full bg-stone-100 text-stone-600 border border-stone-200">{{ account.status.label() }}</span>
-              {% endif %}
+              <span class="text-xs px-2 py-0.5 rounded-full border {{ account.status.badge() }}">{{ account.status.label() }}</span>
             </td>
             <td class="px-4 py-3 text-right font-mono">${{ account.balance }}</td>
             <td class="px-4 py-3 text-stone-500">{{ account.created_at.format("%Y-%m-%d") }}</td>

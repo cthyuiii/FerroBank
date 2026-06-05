@@ -1,20 +1,32 @@
 <header class="bg-white border-b border-stone-200 sticky top-0 z-10">
   <div class="max-w-6xl mx-auto px-6 h-14 flex items-center justify-between gap-6">
-    <a href="/" class="flex items-center gap-2 font-semibold tracking-tight text-stone-900">
-      <span class="inline-flex items-center justify-center w-6 h-6 rounded bg-amber-700 text-white text-xs font-bold">F</span>
-      FerroBank
-    </a>
+    <!-- Logo + primary nav, grouped and left-aligned for every role. -->
+    <div class="flex items-center gap-6">
+      <a href="/" class="flex items-center gap-2 font-semibold tracking-tight text-stone-900">
+        <span class="inline-flex items-center justify-center w-6 h-6 rounded bg-amber-700 text-white text-xs font-bold">F</span>
+        FerroBank
+      </a>
 
-    <nav class="hidden md:flex items-center gap-6 text-sm text-stone-700">
-      {% if let Some(u) = layout.user %}
-        <a href="/accounts" class="hover:text-amber-700 transition">Accounts</a>
-        <a href="/transfers" class="hover:text-amber-700 transition">Transfers</a>
-        <a href="/loans" class="hover:text-amber-700 transition">Loans</a>
-        {% if u.role == "admin" %}
-          <a href="/admin/dashboard" class="hover:text-amber-700 transition">Admin</a>
+      <nav class="hidden md:flex items-center gap-6 text-sm text-stone-700">
+        {% if let Some(u) = layout.user %}
+          {% if u.role == "admin" %}
+            {# Admins manage accounts/transfers from the dashboard, so those
+               customer-facing tabs are hidden in admin mode. #}
+            <a href="/admin/dashboard" class="hover:text-amber-700 transition">Admin</a>
+            <a href="/loans" class="hover:text-amber-700 transition">Loans</a>
+          {% else if u.role == "teller" %}
+            {# Tellers get the staff account/transfer screens, not the customer ones. #}
+            <a href="/staff/accounts" class="hover:text-amber-700 transition">Accounts</a>
+            <a href="/staff/transfers" class="hover:text-amber-700 transition">Transfers</a>
+            <a href="/loans" class="hover:text-amber-700 transition">Loans</a>
+          {% else %}
+            <a href="/accounts" class="hover:text-amber-700 transition">Accounts</a>
+            <a href="/transfers" class="hover:text-amber-700 transition">Transfers</a>
+            <a href="/loans" class="hover:text-amber-700 transition">Loans</a>
+          {% endif %}
         {% endif %}
-      {% endif %}
-    </nav>
+      </nav>
+    </div>
 
     <div class="flex items-center gap-3 text-sm">
       <button
