@@ -145,6 +145,13 @@ cargo run --bin seed
 cargo run
 ```
 
+Steps 4 + 5 can be combined into a single command — the server only starts if the
+seed succeeds (`&&` works in bash and PowerShell 7; use `;` in older PowerShell):
+
+```bash
+cargo run --bin seed && cargo run
+```
+
 Windows PowerShell equivalent for steps 2–3:
 
 ```powershell

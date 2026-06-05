@@ -17,7 +17,6 @@ use crate::models::user::Role;
 use crate::services::account_service::AccountService;
 use crate::services::audit_service::{AuditEntry, AuditService};
 use crate::services::loan_service::LoanService;
-use crate::services::transfer_service::TransferService;
 
 /// Threshold (dollars) at or above which a transfer is treated as noteworthy.
 const LARGE_TRANSFER_THRESHOLD: i64 = 10_000;
@@ -157,9 +156,10 @@ pub struct PgAdminService {
     // because `PgAdminService` is built in `main.rs` before they exist.
     db: PgPool,
     accounts: Option<Arc<dyn AccountService>>,
-    transfers: Option<Arc<dyn TransferService>>,
     loans: Option<Arc<dyn LoanService>>,
     audit: Option<Arc<dyn AuditService>>,
+    // Transfer reads are done with direct joined SQL here (so the dashboard can
+    // show owner names), so the TransferService isn't injected.
 }
 
 impl PgAdminService {
@@ -167,7 +167,6 @@ impl PgAdminService {
         Self {
             db,
             accounts: None,
-            transfers: None,
             loans: None,
             audit: None,
         }
@@ -177,12 +176,10 @@ impl PgAdminService {
     pub fn with_services(
         mut self,
         accounts: Arc<dyn AccountService>,
-        transfers: Arc<dyn TransferService>,
         loans: Arc<dyn LoanService>,
         audit: Arc<dyn AuditService>,
     ) -> Self {
         self.accounts = Some(accounts);
-        self.transfers = Some(transfers);
         self.loans = Some(loans);
         self.audit = Some(audit);
         self

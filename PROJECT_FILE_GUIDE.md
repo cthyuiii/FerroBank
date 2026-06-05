@@ -28,6 +28,7 @@ types — that's the OOP/polymorphism story and what makes modules swappable/tes
 | `TEAM_CHARTER.md` | Who owns which module (the group/individual split) and coordination notes. |
 | `DEMO_SCENARIOS.md` | Step-by-step demonstration script mapped to the marking criteria. |
 | `REPORT_OUTLINE.md` | Suggested structure for the project report. |
+| `PRESENTATION_SCRIPT.md` | Slide deck + live-demo runsheet for the recording (team of 5). |
 | `docs/uml_domain_model.mermaid` | UML class diagram of the domain entities + enums. |
 | `docs/uml_service_architecture.mermaid` | UML class diagram of the service traits, impls, and HTTP layer. |
 | `PROJECT_FILE_GUIDE.md` | This document. |

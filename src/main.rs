@@ -73,7 +73,6 @@ async fn main() -> anyhow::Result<()> {
     let admin_service: Arc<dyn AdminService> = Arc::new(
         PgAdminService::new(pool.clone()).with_services(
             account_service.clone(),
-            transfer_service.clone(),
             loan_service.clone(),
             audit_service.clone(),
         ),

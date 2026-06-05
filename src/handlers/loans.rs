@@ -1,13 +1,13 @@
 //! Loans handlers — owned by the Loans module (Member 5).
 //!
 //! Routes:
-//!   GET  /loans               → customers see their loans; staff see pending queue
+//!   GET  /loans               → customers see their own loans; staff see all loans
 //!   GET  /loans/apply         → application form
 //!   POST /loans/apply         → submit application
 //!   GET  /loans/{id}          → loan detail with repayment history
 //!   POST /loans/{id}/repay    → record a repayment (owner only)
-//!   POST /loans/{id}/approve  → admin-only
-//!   POST /loans/{id}/reject   → admin-only
+//!   POST /loans/{id}/approve  → staff (teller or admin); needs one of each
+//!   POST /loans/{id}/reject   → staff (teller or admin)
 
 use actix_web::{web, HttpResponse};
 use askama::Template;
@@ -44,7 +44,7 @@ pub fn routes(cfg: &mut web::ServiceConfig) {
 struct ListTemplate {
     layout: LayoutCtx,
     loans: Vec<Loan>,
-    /// True when the viewer is a staff member looking at the pending queue,
+    /// True when the viewer is a staff member looking at all loans,
     /// false when they're a customer looking at their own loans.
     staff_view: bool,
 }

@@ -51,19 +51,3 @@ pub struct Transfer {
     pub status_reason: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
-
-impl Transfer {
-    /// Why this transfer is noteworthy, if at all: a stored rejection reason
-    /// takes priority; otherwise a large *completed* transfer is flagged by
-    /// amount. Returns `None` for ordinary transfers — so a reasonless rejected
-    /// row is never mislabeled as a large transfer.
-    pub fn flag_reason(&self) -> Option<String> {
-        if let Some(reason) = &self.status_reason {
-            return Some(reason.clone());
-        }
-        if self.amount >= Decimal::from(10_000) {
-            return Some("Large transfer (≥ $10,000)".to_string());
-        }
-        None
-    }
-}

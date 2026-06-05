@@ -39,8 +39,6 @@ use crate::services::audit_service::AuditService;
 // ── Tunables ─────────────────────────────────────────────────────────
 const MAX_TRANSFERS_PER_WINDOW: usize = 5;
 const RATE_WINDOW: Duration = Duration::from_secs(60);
-/// Transfers at or above this amount get flagged for admin review.
-const LARGE_TRANSFER_THRESHOLD: i64 = 10_000;
 
 /// Public result of a successful `create` call. The handler shows the
 /// plaintext OTP on the confirm page (a real bank would SMS it instead).
@@ -69,10 +67,6 @@ pub trait TransferService: Send + Sync {
 
     /// All transfers a user can see (either as sender or recipient).
     async fn history(&self, user_id: i64) -> Result<Vec<Transfer>, AppError>;
-
-    // ── Read-only methods exposed to the Admin Dashboard ─────────────
-    async fn recent(&self, limit: i64) -> Result<Vec<Transfer>, AppError>;
-    async fn flagged(&self) -> Result<Vec<Transfer>, AppError>;
 }
 
 pub struct PgTransferService {
@@ -418,40 +412,6 @@ impl TransferService for PgTransferService {
             "#,
         )
         .bind(user_id)
-        .fetch_all(&self.db)
-        .await?;
-        Ok(rows)
-    }
-
-    async fn recent(&self, limit: i64) -> Result<Vec<Transfer>, AppError> {
-        let rows = sqlx::query_as::<_, Transfer>(
-            r#"
-            SELECT id, from_account_id, to_account_id, amount, status, note, status_reason, created_at
-            FROM transfers
-            ORDER BY created_at DESC
-            LIMIT $1
-            "#,
-        )
-        .bind(limit)
-        .fetch_all(&self.db)
-        .await?;
-        Ok(rows)
-    }
-
-    async fn flagged(&self) -> Result<Vec<Transfer>, AppError> {
-        // Two simple fraud signals: anything rejected, plus any high-value
-        // transfer that warrants a second look. Real systems layer in
-        // velocity rules, recipient-age rules, geo-anomaly rules, etc.
-        let rows = sqlx::query_as::<_, Transfer>(
-            r#"
-            SELECT id, from_account_id, to_account_id, amount, status, note, status_reason, created_at
-            FROM transfers
-            WHERE status = 'rejected' OR amount >= $1
-            ORDER BY created_at DESC
-            LIMIT 50
-            "#,
-        )
-        .bind(Decimal::from(LARGE_TRANSFER_THRESHOLD))
         .fetch_all(&self.db)
         .await?;
         Ok(rows)
