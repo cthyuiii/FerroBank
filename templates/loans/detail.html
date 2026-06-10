@@ -51,6 +51,12 @@
     <div class="text-xs font-medium uppercase tracking-wider text-stone-500">Annual rate</div>
     <div class="mt-1 font-mono text-stone-900">{{ loan.rate_pct() }}</div>
   </div>
+  {% if let Some(due) = loan.next_payment_due %}
+    <div class="p-4 rounded-lg border border-amber-200 bg-amber-50">
+      <div class="text-xs font-medium uppercase tracking-wider text-amber-800">Next payment due</div>
+      <div class="mt-1 font-mono text-stone-900">{{ due.format("%Y-%m-%d") }}</div>
+    </div>
+  {% endif %}
   <div class="p-4 rounded-lg border border-stone-200 bg-white">
     <div class="text-xs font-medium uppercase tracking-wider text-stone-500">Term</div>
     <div class="mt-1 text-stone-900">{{ loan.term_months }} months</div>

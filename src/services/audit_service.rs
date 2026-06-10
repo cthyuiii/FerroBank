@@ -152,3 +152,36 @@ pub async fn snapshot_system_state(conn: &mut sqlx::PgConnection) -> Result<(), 
     );
     Ok(())
 }
+
+// ── User notifications ───────────────────────────────────────────────
+// Lightweight per-user messages surfaced as browser toasts (layout.html
+// polls /notifications) and mirrored to Telegram when the user is linked.
+
+/// Queue a notification for a user. Failures are logged, never fatal — a
+/// missed toast must not break a money movement.
+pub async fn notify(db: &PgPool, user_id: i64, message: &str) {
+    if let Err(e) = sqlx::query(r#"INSERT INTO notifications (user_id, message) VALUES ($1, $2)"#)
+        .bind(user_id)
+        .bind(message)
+        .execute(db)
+        .await
+    {
+        tracing::warn!(user_id, error = %e, "failed to queue notification");
+    }
+}
+
+/// Fetch-and-mark: returns all unseen notifications for the user and stamps
+/// them seen in the same statement, so each toast fires exactly once.
+pub async fn take_unseen(db: &PgPool, user_id: i64) -> Vec<String> {
+    sqlx::query_scalar::<_, String>(
+        r#"
+        UPDATE notifications SET seen_at = now()
+        WHERE user_id = $1 AND seen_at IS NULL
+        RETURNING message
+        "#,
+    )
+    .bind(user_id)
+    .fetch_all(db)
+    .await
+    .unwrap_or_default()
+}

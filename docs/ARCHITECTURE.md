@@ -29,20 +29,20 @@ all business rules and transactions live there. Models are SQLx-typed structs.
 
 ## Layered + OOP design (how the spec's OOP requirements are met)
 
-The tutorial lists four concepts: **encapsulation, traits, polymorphism, and
+The OOP design centres on four concepts: **encapsulation, traits, polymorphism, and
 concurrency safety (Arc/Mutex)**. Mapping each to the code:
 
 | Concept | Where it lives |
 |---|---|
 | **Encapsulation** | Each `Pg…Service` keeps its fields **private** (`db`, `audit`, `rate_limit`, the admin's injected services). Callers only touch the trait methods — they know nothing about SQL or the pool. Internal-only details (`otp_hash`, the `PendingRow`, `hash_password`) are never exposed on public types. |
-| **Traits (abstraction / shared interface)** | Six service traits — `AuthService`, `AccountService`, `TransferService`, `LoanService`, `AuditService`, `AdminService` — define behaviour; `Pg…` structs implement it. This is the tutorial's "trait = common interface" pattern. |
+| **Traits (abstraction / shared interface)** | Six service traits — `AuthService`, `AccountService`, `TransferService`, `LoanService`, `AuditService`, `AdminService` — define behaviour; `Pg…` structs implement it. Traits as shared interfaces — the classic Rust abstraction pattern. |
 | **Polymorphism** | *Dynamic dispatch:* services are used as `Arc<dyn Trait>` / `web::Data<dyn Trait>`, so handlers depend on the abstraction and an impl is swappable (e.g. a mock in tests). *Parametric:* `fn render<T: Template>(t: T)`. *Ad-hoc:* enums (`Role`, `AccountStatus`, …) carry behaviour via `impl` (`label()`, `badge()`). |
 | **Inheritance (Rust-style)** | Traits use **supertraits** (`pub trait TransferService: Send + Sync`). Rust has no class inheritance; trait composition + the `AdminService` *composing* the other services (`with_services(...)`) is the idiomatic substitute. |
 | **Concurrency (Arc + Mutex)** | The transfer engine holds an `Arc`-shared, `tokio::sync::Mutex`-guarded rate-limit map, layered on top of database row locks (below). |
 
-### A note on the tutorial's account-type example
+### A note on subtype-style account modelling
 
-The slides illustrate polymorphism with `SavingsAccount` / `CurrentAccount` /
+A common illustration of polymorphism uses `SavingsAccount` / `CurrentAccount` /
 `BusinessAccount` structs each implementing a `BankAccount` trait. FerroBank models
 account variety with an **`AccountType` enum** plus behaviour in `AccountService`
 (layered architecture), and gets its polymorphism at the **service layer** via
@@ -50,9 +50,9 @@ account variety with an **`AccountType` enum** plus behaviour in `AccountService
 sits. (If subtype-style polymorphism is wanted explicitly, a small `AccountKind`
 trait implemented by per-type structs can be added — see the README's roadmap.)
 
-### Mapping to the tutorial's four "core objects"
+### Mapping to the four core banking objects
 
-| Tutorial object | FerroBank realisation |
+| Core object | FerroBank realisation |
 |---|---|
 | `BankAccount` (id, owner, balance, status) | `models::account::Account` + `AccountService` (open/approve/freeze/close/adjust/balance) |
 | `MoneyTransfer` (from, to, amount, status, timestamp) | `models::transfer::Transfer` + `TransferService` (create → confirm) |

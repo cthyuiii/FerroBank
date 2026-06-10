@@ -57,6 +57,12 @@
             <td class="px-4 py-3 font-mono text-stone-700">{{ t.own_account }}</td>
             <td class="px-4 py-3 text-right font-mono {% if t.outgoing %}text-red-700{% else %}text-emerald-700{% endif %}">
               {% if t.outgoing %}−{% else %}+{% endif %}${{ t.amount }}
+              {% if t.outgoing && t.status == TransferStatus::OnHold %}
+                <div class="mt-1">
+                  <a href="/transfers/{{ t.id }}/review"
+                     class="text-xs text-purple-700 underline hover:text-purple-900">Submit review →</a>
+                </div>
+              {% endif %}
             </td>
             <td class="px-4 py-3">
               <span class="text-xs px-2 py-0.5 rounded-full border {{ t.status.badge() }}">{{ t.status.label() }}</span>

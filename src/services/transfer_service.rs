@@ -34,7 +34,7 @@ use tokio::sync::Mutex;
 use crate::errors::AppError;
 use crate::models::account::AccountStatus;
 use crate::models::transfer::{Transfer, TransferStatus};
-use crate::services::audit_service::AuditService;
+use crate::services::audit_service::{notify, AuditService};
 use crate::services::telegram_service::OtpChannel;
 
 // ── Tunables ─────────────────────────────────────────────────────────
@@ -71,6 +71,49 @@ pub trait TransferService: Send + Sync {
 
     /// All transfers a user can see (either as sender or recipient).
     async fn history(&self, user_id: i64) -> Result<Vec<Transfer>, AppError>;
+
+    /// A transfer, visible only to the owner of its source account.
+    async fn get_for_owner(&self, actor: i64, transfer_id: i64) -> Result<Transfer, AppError>;
+
+    /// Customer submits (or updates) the purpose + identity claim for a held
+    /// transfer, so staff can review it.
+    async fn submit_review(
+        &self,
+        actor: i64,
+        transfer_id: i64,
+        purpose: &str,
+        nric: &str,
+    ) -> Result<(), AppError>;
+
+    /// Staff queue: every on-hold transfer with its review request (if any)
+    /// and the sender's NRIC on file for identity comparison.
+    async fn list_held(&self) -> Result<Vec<HeldRow>, AppError>;
+
+    /// Staff release: execute the held money move (same locks as confirm).
+    async fn release(&self, reviewer: i64, transfer_id: i64) -> Result<(), AppError>;
+
+    /// Staff denial: reject the held transfer with a reason.
+    async fn deny(&self, reviewer: i64, transfer_id: i64, reason: &str) -> Result<(), AppError>;
+}
+
+/// One row of the staff review queue.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct HeldRow {
+    pub id: i64,
+    pub amount: Decimal,
+    pub status_reason: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub from_number: String,
+    pub to_number: String,
+    pub from_user_id: i64,
+    pub from_owner: String,
+    /// NRIC stored on the sender's profile (staff compare against the claim).
+    pub nric_on_file: Option<String>,
+    pub to_owner: String,
+    /// Review request fields — `None` until the customer submits one.
+    pub purpose: Option<String>,
+    pub nric_claimed: Option<String>,
+    pub submitted_at: Option<DateTime<Utc>>,
 }
 
 pub struct PgTransferService {
@@ -134,6 +177,7 @@ struct PendingRow {
     status: TransferStatus,
     note: Option<String>,
     otp_hash: Option<String>,
+    otp_attempts: i32,
     created_at: DateTime<Utc>,
 }
 
@@ -180,6 +224,45 @@ impl TransferService for PgTransferService {
                     "one of the accounts does not exist".into(),
                 ))
             }
+        }
+
+        // ── Per-transfer limit ──────────────────────────────────────────
+        // First promote any limit change whose hold window has matured (lazy
+        // application — no background job needed), then enforce the limit.
+        sqlx::query(
+            r#"
+            UPDATE accounts a SET transfer_limit = lc.new_limit
+            FROM (
+                SELECT DISTINCT ON (account_id) account_id, new_limit
+                FROM limit_changes
+                WHERE account_id = $1 AND applied_at IS NULL AND effective_at <= now()
+                ORDER BY account_id, effective_at DESC
+            ) lc
+            WHERE a.id = lc.account_id
+            "#,
+        )
+        .bind(from_account_id)
+        .execute(&self.db)
+        .await?;
+        sqlx::query(
+            r#"
+            UPDATE limit_changes SET applied_at = now()
+            WHERE account_id = $1 AND applied_at IS NULL AND effective_at <= now()
+            "#,
+        )
+        .bind(from_account_id)
+        .execute(&self.db)
+        .await?;
+
+        let (limit,): (Decimal,) =
+            sqlx::query_as(r#"SELECT transfer_limit FROM accounts WHERE id = $1"#)
+                .bind(from_account_id)
+                .fetch_one(&self.db)
+                .await?;
+        if amount > limit {
+            return Err(AppError::BadRequest(format!(
+                "amount exceeds this account's per-transfer limit of ${limit} — request a limit increase from the account page"
+            )));
         }
 
         // ── Application-level concurrency control ──────────────────────
@@ -263,7 +346,7 @@ impl TransferService for PgTransferService {
         // (1) Lock the transfer row. Anything but 'pending' is a no-op.
         let pending: PendingRow = sqlx::query_as::<_, PendingRow>(
             r#"
-            SELECT id, from_account_id, to_account_id, amount, status, note, otp_hash, created_at
+            SELECT id, from_account_id, to_account_id, amount, status, note, otp_hash, otp_attempts, created_at
             FROM transfers
             WHERE id = $1
             FOR UPDATE
@@ -279,6 +362,18 @@ impl TransferService for PgTransferService {
                 "transfer is already {}",
                 pending.status.label().to_lowercase()
             )));
+        }
+
+        // OTP TTL: a pending transfer must be confirmed within 10 minutes.
+        if Utc::now() - pending.created_at > chrono::Duration::minutes(10) {
+            mark_rejected(&mut tx, transfer_id, "confirmation window expired").await?;
+            tx.commit().await?;
+            self.audit
+                .record(Some(actor), "transfer.expired", json!({ "transfer_id": transfer_id }))
+                .await?;
+            return Err(AppError::Conflict(
+                "the confirmation window has expired — please start the transfer again".into(),
+            ));
         }
 
         // (2) The actor must own the source account. Without this check, any
@@ -308,17 +403,44 @@ impl TransferService for PgTransferService {
             .verify_password(otp.as_bytes(), &parsed)
             .is_err()
         {
-            // Reject and commit so the rejection is durable, audit afterwards.
-            mark_rejected(&mut tx, transfer_id, "invalid one-time confirmation code").await?;
+            let attempts = pending.otp_attempts + 1;
+            if attempts >= 3 {
+                // Three strikes: reject the transfer — a fraud signal in itself.
+                mark_rejected(&mut tx, transfer_id, "too many invalid confirmation codes").await?;
+                tx.commit().await?;
+                self.audit
+                    .record(
+                        Some(actor),
+                        "transfer.otp_lockout",
+                        json!({ "transfer_id": transfer_id, "attempts": attempts }),
+                    )
+                    .await?;
+                notify(
+                    &self.db,
+                    actor,
+                    &format!("Transfer #{transfer_id} was rejected after 3 invalid codes. If this wasn't you, contact the bank immediately."),
+                )
+                .await;
+                return Err(AppError::BadRequest(
+                    "too many invalid codes — the transfer has been rejected".into(),
+                ));
+            }
+            sqlx::query(r#"UPDATE transfers SET otp_attempts = $1 WHERE id = $2"#)
+                .bind(attempts)
+                .bind(transfer_id)
+                .execute(&mut *tx)
+                .await?;
             tx.commit().await?;
             self.audit
                 .record(
                     Some(actor),
                     "transfer.otp_failed",
-                    json!({ "transfer_id": transfer_id }),
+                    json!({ "transfer_id": transfer_id, "attempt": attempts }),
                 )
                 .await?;
-            return Err(AppError::BadRequest("invalid confirmation code".into()));
+            return Err(AppError::BadRequest(format!(
+                "invalid confirmation code (attempt {attempts} of 3)"
+            )));
         }
 
         // (4) Lock both account rows. ORDER BY id eliminates deadlock potential
@@ -407,10 +529,113 @@ impl TransferService for PgTransferService {
                     }),
                 )
                 .await?;
+
+            // Hijack heuristic: 3+ attempts to send more than the balance in
+            // 24 h looks like an attacker probing a stolen session -> freeze.
+            let (overdraft_attempts,): (i64,) = sqlx::query_as(
+                r#"
+                SELECT COUNT(*) FROM transfers
+                WHERE from_account_id = $1 AND status = 'rejected'
+                  AND status_reason LIKE 'insufficient funds%'
+                  AND created_at > now() - interval '24 hours'
+                "#,
+            )
+            .bind(pending.from_account_id)
+            .fetch_one(&self.db)
+            .await?;
+            if overdraft_attempts >= 3 {
+                let frozen = sqlx::query(
+                    r#"UPDATE accounts SET status = 'frozen' WHERE id = $1 AND status = 'active'"#,
+                )
+                .bind(pending.from_account_id)
+                .execute(&self.db)
+                .await?;
+                if frozen.rows_affected() > 0 {
+                    self.audit
+                        .record(
+                            Some(actor),
+                            "account.frozen.suspected_hijack",
+                            json!({
+                                "account_id": pending.from_account_id,
+                                "overdraft_attempts": overdraft_attempts,
+                            }),
+                        )
+                        .await?;
+                    let msg = "Your account was frozen after repeated attempts to transfer more than its balance. Contact the bank to unfreeze it.";
+                    notify(&self.db, actor, msg).await;
+                    self.otp_channel.send_note(actor, msg).await;
+                }
+            }
+
             return Err(reject_with(&format!(
                 "insufficient funds: balance ${} < ${}",
                 from.2, pending.amount
             )));
+        }
+
+        // (5b) Fraud rules — evaluated only on otherwise-payable transfers.
+        // A match parks the transfer ON HOLD without moving money; the
+        // customer submits a purpose + identity claim and staff decide.
+        let hold_reason: Option<String> = if pending.amount >= Decimal::from(10_000) {
+            Some("large transfer (>= $10,000)".into())
+        } else if pending.amount >= Decimal::from(9_000) {
+            Some("just under $10,000 (possible structuring)".into())
+        } else if from.2 > Decimal::from(5_000)
+            && pending.amount * Decimal::from(2) > from.2
+        {
+            Some("drains more than half of the account balance".into())
+        } else {
+            let (recent,): (i64,) = sqlx::query_as(
+                r#"
+                SELECT COUNT(*) FROM transfers
+                WHERE from_account_id = $1 AND status IN ('completed', 'on_hold')
+                  AND created_at > now() - interval '1 hour'
+                "#,
+            )
+            .bind(pending.from_account_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if recent >= 3 {
+                Some("high velocity: 4+ transfers from this account within 1 hour".into())
+            } else {
+                None
+            }
+        };
+
+        if let Some(reason) = hold_reason {
+            sqlx::query(
+                r#"UPDATE transfers SET status = 'on_hold', status_reason = $2, otp_hash = NULL WHERE id = $1"#,
+            )
+            .bind(transfer_id)
+            .bind(&reason)
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await?;
+
+            self.audit
+                .record(
+                    Some(actor),
+                    "transfer.held",
+                    json!({ "transfer_id": transfer_id, "reason": reason }),
+                )
+                .await?;
+            let msg = format!(
+                "Transfer #{transfer_id} of ${} is ON HOLD ({reason}). It may be flagged as potentially illegitimate — submit the transfer purpose and your NRIC for staff review.",
+                pending.amount
+            );
+            notify(&self.db, actor, &msg).await;
+            self.otp_channel.send_note(actor, &msg).await;
+
+            return Ok(Transfer {
+                id: pending.id,
+                from_account_id: pending.from_account_id,
+                to_account_id: pending.to_account_id,
+                amount: pending.amount,
+                status: TransferStatus::OnHold,
+                note: pending.note,
+                status_reason: Some(reason),
+                created_at: pending.created_at,
+            });
         }
 
         // (6) Move money + finalize transfer, all inside the same transaction.
@@ -450,6 +675,24 @@ impl TransferService for PgTransferService {
             )
             .await?;
 
+        // Tell both parties (browser toast + Telegram when linked).
+        notify(
+            &self.db,
+            actor,
+            &format!("Transfer #{transfer_id} of ${} completed.", pending.amount),
+        )
+        .await;
+        if let Ok(Some(recipient)) =
+            sqlx::query_scalar::<_, i64>(r#"SELECT user_id FROM accounts WHERE id = $1"#)
+                .bind(pending.to_account_id)
+                .fetch_optional(&self.db)
+                .await
+        {
+            let msg = format!("You received ${} (transfer #{transfer_id}).", pending.amount);
+            notify(&self.db, recipient, &msg).await;
+            self.otp_channel.send_note(recipient, &msg).await;
+        }
+
         Ok(Transfer {
             id: pending.id,
             from_account_id: pending.from_account_id,
@@ -460,6 +703,230 @@ impl TransferService for PgTransferService {
             status_reason: None,
             created_at: pending.created_at,
         })
+    }
+
+    async fn get_for_owner(&self, actor: i64, transfer_id: i64) -> Result<Transfer, AppError> {
+        sqlx::query_as::<_, Transfer>(
+            r#"
+            SELECT t.id, t.from_account_id, t.to_account_id, t.amount, t.status, t.note, t.status_reason, t.created_at
+            FROM transfers t
+            JOIN accounts a ON a.id = t.from_account_id
+            WHERE t.id = $1 AND a.user_id = $2
+            "#,
+        )
+        .bind(transfer_id)
+        .bind(actor)
+        .fetch_optional(&self.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("transfer {transfer_id} not found")))
+    }
+
+    async fn submit_review(
+        &self,
+        actor: i64,
+        transfer_id: i64,
+        purpose: &str,
+        nric: &str,
+    ) -> Result<(), AppError> {
+        if purpose.trim().is_empty() || nric.trim().is_empty() {
+            return Err(AppError::BadRequest(
+                "both the purpose and your NRIC are required".into(),
+            ));
+        }
+        // Only the owner of the source account may file, and only while held.
+        let t = self.get_for_owner(actor, transfer_id).await?;
+        if t.status != TransferStatus::OnHold {
+            return Err(AppError::Conflict("this transfer is not on hold".into()));
+        }
+
+        sqlx::query(
+            r#"
+            INSERT INTO transfer_reviews (transfer_id, purpose, nric_claimed)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (transfer_id) DO UPDATE
+                SET purpose = EXCLUDED.purpose,
+                    nric_claimed = EXCLUDED.nric_claimed,
+                    submitted_at = now()
+                WHERE transfer_reviews.decision IS NULL
+            "#,
+        )
+        .bind(transfer_id)
+        .bind(purpose.trim())
+        .bind(nric.trim())
+        .execute(&self.db)
+        .await?;
+
+        self.audit
+            .record(
+                Some(actor),
+                "transfer.review_submitted",
+                json!({ "transfer_id": transfer_id }),
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn list_held(&self) -> Result<Vec<HeldRow>, AppError> {
+        let rows = sqlx::query_as::<_, HeldRow>(
+            r#"
+            SELECT t.id, t.amount, t.status_reason, t.created_at,
+                   fa.account_number AS from_number, ta.account_number AS to_number,
+                   fu.id AS from_user_id, fu.full_name AS from_owner, fu.nric AS nric_on_file,
+                   tu.full_name AS to_owner,
+                   r.purpose, r.nric_claimed, r.submitted_at
+            FROM transfers t
+            JOIN accounts fa ON fa.id = t.from_account_id
+            JOIN accounts ta ON ta.id = t.to_account_id
+            JOIN users    fu ON fu.id = fa.user_id
+            JOIN users    tu ON tu.id = ta.user_id
+            LEFT JOIN transfer_reviews r ON r.transfer_id = t.id AND r.decision IS NULL
+            WHERE t.status = 'on_hold'
+            ORDER BY t.created_at ASC
+            "#,
+        )
+        .fetch_all(&self.db)
+        .await?;
+        Ok(rows)
+    }
+
+    async fn release(&self, reviewer: i64, transfer_id: i64) -> Result<(), AppError> {
+        let mut tx = self.db.begin().await?;
+
+        let pending: PendingRow = sqlx::query_as(
+            r#"
+            SELECT id, from_account_id, to_account_id, amount, status, note, otp_hash, otp_attempts, created_at
+            FROM transfers WHERE id = $1 FOR UPDATE
+            "#,
+        )
+        .bind(transfer_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("transfer {transfer_id} not found")))?;
+        if pending.status != TransferStatus::OnHold {
+            return Err(AppError::Conflict("transfer is not on hold".into()));
+        }
+
+        // The customer must have filed a review request first.
+        let review: Option<(i64,)> = sqlx::query_as(
+            r#"SELECT id FROM transfer_reviews WHERE transfer_id = $1 AND decision IS NULL FOR UPDATE"#,
+        )
+        .bind(transfer_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if review.is_none() {
+            return Err(AppError::Conflict(
+                "the customer has not submitted a review request yet".into(),
+            ));
+        }
+
+        // Same locked re-checks as confirm — the world may have changed.
+        let (low, high) = if pending.from_account_id < pending.to_account_id {
+            (pending.from_account_id, pending.to_account_id)
+        } else {
+            (pending.to_account_id, pending.from_account_id)
+        };
+        let accounts: Vec<(i64, AccountStatus, Decimal)> = sqlx::query_as(
+            r#"SELECT id, status, balance FROM accounts WHERE id IN ($1, $2) ORDER BY id FOR UPDATE"#,
+        )
+        .bind(low)
+        .bind(high)
+        .fetch_all(&mut *tx)
+        .await?;
+        let from_ok = accounts
+            .iter()
+            .any(|a| a.0 == pending.from_account_id && a.1 == AccountStatus::Active && a.2 >= pending.amount);
+        let to_ok = accounts
+            .iter()
+            .any(|a| a.0 == pending.to_account_id && a.1 == AccountStatus::Active);
+        if !from_ok || !to_ok {
+            mark_rejected(&mut tx, transfer_id, "release failed: account state or funds changed").await?;
+            sqlx::query(
+                r#"UPDATE transfer_reviews SET decided_by = $2, decided_at = now(), decision = 'denied' WHERE transfer_id = $1"#,
+            )
+            .bind(transfer_id)
+            .bind(reviewer)
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await?;
+            return Err(AppError::Conflict(
+                "cannot release: the account state or balance changed since the hold".into(),
+            ));
+        }
+
+        apply_money_move(
+            &mut tx,
+            pending.from_account_id,
+            pending.to_account_id,
+            pending.amount,
+            transfer_id,
+        )
+        .await?;
+        sqlx::query(
+            r#"UPDATE transfer_reviews SET decided_by = $2, decided_at = now(), decision = 'released' WHERE transfer_id = $1"#,
+        )
+        .bind(transfer_id)
+        .bind(reviewer)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+
+        self.audit
+            .record(Some(reviewer), "transfer.released", json!({ "transfer_id": transfer_id }))
+            .await?;
+        if let Ok(Some(owner)) =
+            sqlx::query_scalar::<_, i64>(r#"SELECT user_id FROM accounts WHERE id = $1"#)
+                .bind(pending.from_account_id)
+                .fetch_optional(&self.db)
+                .await
+        {
+            let msg = format!(
+                "Good news — your held transfer #{transfer_id} of ${} was reviewed and released.",
+                pending.amount
+            );
+            notify(&self.db, owner, &msg).await;
+            self.otp_channel.send_note(owner, &msg).await;
+        }
+        Ok(())
+    }
+
+    async fn deny(&self, reviewer: i64, transfer_id: i64, reason: &str) -> Result<(), AppError> {
+        let updated = sqlx::query(
+            r#"UPDATE transfers SET status = 'rejected', status_reason = $2 WHERE id = $1 AND status = 'on_hold'"#,
+        )
+        .bind(transfer_id)
+        .bind(reason)
+        .execute(&self.db)
+        .await?;
+        if updated.rows_affected() == 0 {
+            return Err(AppError::Conflict("transfer is not on hold".into()));
+        }
+        sqlx::query(
+            r#"UPDATE transfer_reviews SET decided_by = $2, decided_at = now(), decision = 'denied' WHERE transfer_id = $1 AND decision IS NULL"#,
+        )
+        .bind(transfer_id)
+        .bind(reviewer)
+        .execute(&self.db)
+        .await?;
+
+        self.audit
+            .record(
+                Some(reviewer),
+                "transfer.denied",
+                json!({ "transfer_id": transfer_id, "reason": reason }),
+            )
+            .await?;
+        if let Ok(Some(owner)) = sqlx::query_scalar::<_, i64>(
+            r#"SELECT a.user_id FROM accounts a JOIN transfers t ON t.from_account_id = a.id WHERE t.id = $1"#,
+        )
+        .bind(transfer_id)
+        .fetch_optional(&self.db)
+        .await
+        {
+            let msg = format!("Your held transfer #{transfer_id} was denied after review: {reason}");
+            notify(&self.db, owner, &msg).await;
+            self.otp_channel.send_note(owner, &msg).await;
+        }
+        Ok(())
     }
 
     async fn history(&self, user_id: i64) -> Result<Vec<Transfer>, AppError> {

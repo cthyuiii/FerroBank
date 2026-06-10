@@ -215,7 +215,7 @@ impl PgAdminService {
     ///   1. any rejected transfer,
     ///   2. large transfer (≥ $10,000),
     ///   3. structuring — amount just under the threshold (≥ $9,000),
-    ///   4. velocity — the source account made 4+ transfers in the prior 24h.
+    ///   4. velocity — the source account made 4+ transfers in the prior hour.
     async fn flagged_transfers_detailed(&self) -> Result<Vec<FlaggedTransfer>, AppError> {
         let rows = sqlx::query_as::<_, FlaggedTransfer>(
             r#"
@@ -230,7 +230,7 @@ impl PgAdminService {
                           THEN 'Large transfer (>= $10,000)'
                      WHEN t.amount >= $2
                           THEN 'Just under $10,000 (possible structuring)'
-                     ELSE 'High velocity: 4+ transfers from this account in 24h'
+                     ELSE 'High velocity: 4+ transfers from this account within 1 hour'
                    END AS reason,
                    t.created_at
             FROM transfers t
@@ -244,7 +244,7 @@ impl PgAdminService {
                     SELECT COUNT(*) FROM transfers v
                     WHERE v.from_account_id = t.from_account_id
                       AND v.created_at <= t.created_at
-                      AND v.created_at >  t.created_at - INTERVAL '24 hours'
+                      AND v.created_at >  t.created_at - INTERVAL '1 hour'
                   ) >= 4
             ORDER BY t.created_at DESC
             LIMIT 100

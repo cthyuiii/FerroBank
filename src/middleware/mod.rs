@@ -2,4 +2,4 @@
 
 pub mod auth;
 
-pub use auth::{CurrentUser, RequireRole, SessionUser};
+pub use auth::{ActivityGuard, CurrentUser, RequireRole, SessionUser};

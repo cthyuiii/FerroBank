@@ -252,3 +252,40 @@ a rejected transfer, and a 4-transfer burst from Charlie (velocity).
 | SSR frontend & reusable components | all (shared layout, partials, themes) |
 | Concurrency handling / real-time-ish updates (individual) | 3 (race demo page), 5 |
 | Advanced auth / security workflows (individual) | 11 (Telegram), 1 |
+
+
+---
+
+## New scenarios from the security-hardening pass
+
+**13 — Mandatory Telegram linking.** Register a fresh customer (the form now
+asks First/Middle/Last name **and NRIC**) → note the page says you must sign in
+again → sign in → you are routed to the Telegram linking page **and nowhere
+else** until linked. The page polls and refreshes itself the instant the bot
+confirms. From then on every code arrives on the phone — nothing on screen.
+
+**14 — Transfer limit with hold window.** On an account page, request a limit
+increase → a consent popup warns that increases are held before applying
+(12 h normally). As **alice** the hold is seeded to **10 seconds**: wait it
+out on camera, then send a transfer above the old limit — it now passes. A
+*decrease* applies immediately.
+
+**15 — Fraud hold + identity review.** Send a transfer that drains >50% of a
+>$5,000 balance (or ≥ $9,000). After OTP it lands **on hold** — no money moved
+— and you're told it may be illegitimate. Submit the purpose + NRIC; switch to
+teller/admin → **Held transfers** queue shows the claim next to the NRIC on
+file → release (money moves) or deny. The sender gets a toast + Telegram
+message either way.
+
+**16 — Hijack freeze.** Attempt 3 transfers above an account's balance within
+24 h (the race demo does this in one click). The third rejection freezes the
+account automatically and notifies the owner.
+
+**17 — Inactivity timeout.** Sign in, wait 5 minutes (or shrink the interval
+in middleware for the recording), click anything → you're back at the login
+page with "signed out after 5 minutes of inactivity". Server-side, on database
+time — clearing browser cookies can't bypass it.
+
+**18 — Profile changes + OTP everywhere.** Settings → change email or
+password → both require a fresh code. Three wrong codes on a transfer reject
+it outright. Codes expire after 10 minutes; pending loans after 7 days.

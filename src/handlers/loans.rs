@@ -59,6 +59,8 @@ struct ApplyTemplate {
     principal: String,
     interest_rate: String,
     term_months: String,
+    /// Active accounts the principal can be disbursed to.
+    accounts: Vec<Account>,
 }
 
 #[derive(Template)]
@@ -90,6 +92,8 @@ struct ApplyForm {
     /// Annual rate as a percentage (e.g. "5.25" for 5.25%).
     interest_rate_pct: String,
     term_months: String,
+    /// Account credited with the principal when fully approved.
+    disbursement_account_id: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -125,7 +129,10 @@ async fn list(
     })
 }
 
-async fn apply_form(user: CurrentUser) -> Result<HttpResponse, AppError> {
+async fn apply_form(
+    account_svc: web::Data<dyn AccountService>,
+    user: CurrentUser,
+) -> Result<HttpResponse, AppError> {
     // Only customers borrow — staff can't own accounts, so a staff loan could
     // never be repaid (repayments debit a funding account).
     if user.role != Role::Customer {
@@ -137,12 +144,27 @@ async fn apply_form(user: CurrentUser) -> Result<HttpResponse, AppError> {
         principal: String::new(),
         interest_rate: String::new(),
         term_months: String::new(),
+        accounts: active_accounts(&account_svc, user.id).await?,
     })
+}
+
+/// The user's active accounts (disbursement / repayment pickers).
+async fn active_accounts(
+    account_svc: &web::Data<dyn AccountService>,
+    user_id: i64,
+) -> Result<Vec<Account>, AppError> {
+    Ok(account_svc
+        .list_for_user(user_id)
+        .await?
+        .into_iter()
+        .filter(|a| a.status == AccountStatus::Active)
+        .collect())
 }
 
 async fn apply_submit(
     form: web::Form<ApplyForm>,
     otp_svc: web::Data<dyn ActionOtpService>,
+    account_svc: web::Data<dyn AccountService>,
     user: CurrentUser,
 ) -> Result<HttpResponse, AppError> {
     // Same guard as the form — POSTs can arrive without visiting the form.
@@ -150,29 +172,36 @@ async fn apply_submit(
         return Err(AppError::Forbidden);
     }
     let form = form.into_inner();
+    let accounts = active_accounts(&account_svc, user.id).await?;
 
-    let re_render = |msg: String| -> Result<HttpResponse, AppError> {
+    let re_render = |msg: String, accounts: Vec<Account>| -> Result<HttpResponse, AppError> {
         render(ApplyTemplate {
             layout: LayoutCtx::from_user(Some(&user)),
             error: Some(msg),
             principal: form.principal.clone(),
             interest_rate: form.interest_rate_pct.clone(),
             term_months: form.term_months.clone(),
+            accounts,
         })
     };
 
+    // The chosen disbursement account must be the applicant's own.
+    if !accounts.iter().any(|a| a.id == form.disbursement_account_id) {
+        return re_render("Choose one of your active accounts for the payout.".into(), accounts);
+    }
+
     let principal = match Decimal::from_str(form.principal.trim()) {
         Ok(d) => d,
-        Err(_) => return re_render("Principal must be a number like 5000.00.".into()),
+        Err(_) => return re_render("Principal must be a number like 5000.00.".into(), accounts),
     };
     let pct = match Decimal::from_str(form.interest_rate_pct.trim()) {
         Ok(d) => d,
-        Err(_) => return re_render("Interest rate must be a number like 5.25.".into()),
+        Err(_) => return re_render("Interest rate must be a number like 5.25.".into(), accounts),
     };
     let interest_rate = pct / Decimal::from(100); // 5.25 → 0.0525
     let term_months = match form.term_months.trim().parse::<i32>() {
         Ok(n) => n,
-        Err(_) => return re_render("Term must be a whole number of months.".into()),
+        Err(_) => return re_render("Term must be a whole number of months.".into(), accounts),
     };
 
     // Applying for credit is a sensitive action → OTP gate. The application
@@ -185,6 +214,7 @@ async fn apply_submit(
                 "principal": principal.to_string(),
                 "interest_rate": interest_rate.to_string(),
                 "term_months": term_months,
+                "disbursement_account_id": form.disbursement_account_id,
             }),
         )
         .await?;
@@ -223,6 +253,7 @@ async fn apply_confirm(
             principal: String::new(),
             interest_rate: String::new(),
             term_months: String::new(),
+            accounts: Vec::new(),
         })
     };
 
@@ -242,9 +273,10 @@ async fn apply_confirm(
     let interest_rate = Decimal::from_str(payload["interest_rate"].as_str().unwrap_or_default())
         .map_err(|_| AppError::Internal(anyhow::anyhow!("bad loan.apply payload")))?;
     let term_months = payload["term_months"].as_i64().unwrap_or_default() as i32;
+    let disbursement_account_id = payload["disbursement_account_id"].as_i64().unwrap_or_default();
 
     match svc
-        .apply(user.id, principal, interest_rate, term_months)
+        .apply(user.id, principal, interest_rate, term_months, disbursement_account_id)
         .await
     {
         Ok(loan) => Ok(HttpResponse::Found()

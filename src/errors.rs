@@ -89,8 +89,8 @@ impl ResponseError for AppError {
         let (title, message) = match self {
             AppError::NotFound(m) => ("Not Found", m.as_str()),
             AppError::Forbidden => (
-                "Forbidden",
-                "You don't have permission to access this resource.",
+                "You're not supposed to be here",
+                "You don't have access to this page. If you think you should, sign in with the right account — or head back to safety.",
             ),
             AppError::BadRequest(m) => ("Bad Request", m.as_str()),
             AppError::Conflict(m) => ("Conflict", m.as_str()),
@@ -114,4 +114,23 @@ impl ResponseError for AppError {
             .content_type("text/html; charset=utf-8")
             .body(body)
     }
+}
+
+/// Friendly, fully-rendered 403 page. Shared by `AppError::Forbidden` and the
+/// `RequireRole` middleware so a denied user never sees bare white text.
+pub fn forbidden_page() -> HttpResponse {
+    let body = ErrorPage {
+        layout: crate::view::LayoutCtx::anonymous(),
+        status: 403,
+        title: "You're not supposed to be here",
+        message: "You don't have access to this page. If you think you should, \
+                  sign in with the right account — or head back to safety.",
+    }
+    .render()
+    .unwrap_or_else(|_| {
+        "403 — you're not supposed to be here (no access to this page)".to_string()
+    });
+    HttpResponse::Forbidden()
+        .content_type("text/html; charset=utf-8")
+        .body(body)
 }

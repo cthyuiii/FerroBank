@@ -2,12 +2,12 @@
 
 **Iron-clad core banking, built in Rust.**
 
-A server-side-rendered enterprise banking platform built for **CSC1106 Web Programming** at SIT
-(spec v1.2.2 — Banking System domain).
-Demonstrates layered architecture, OOP via traits, ACID money movement with both database-level
-and application-level concurrency control, role-based access control, fraud detection, and audit logging.
+A server-side-rendered banking platform for **CSC1106 Web Programming**
+(Banking System domain). Concurrency-safe money movement, role-based access,
+out-of-band OTPs via Telegram, fraud holds with identity review, and a full
+audit trail.
 
-> **Group / Author info** — to be filled in by the group leader before submission:
+> **Group / author info** — to be filled in by the group leader before submission:
 >
 > - Group Number: `g##`
 > - Members: `Name 1 (SIT ID)`, `Name 2 (SIT ID)`, `Name 3 (SIT ID)`, `Name 4 (SIT ID)`, `Name 5 (SIT ID)`
@@ -21,304 +21,172 @@ and application-level concurrency control, role-based access control, fraud dete
 | Web framework | Actix Web 4 |
 | Templates (SSR) | Askama (compile-time checked) |
 | Database | PostgreSQL 16 |
-| DB access | SQLx (compile-time checked SQL) |
-| Auth | argon2 password hashing, actix-session cookies |
-| Money | rust_decimal (never f64) |
-| Frontend | Tailwind CSS via CDN, HTMX for partial updates |
-| Logging | tracing + tracing-subscriber |
+| DB access | SQLx |
+| Auth | argon2id hashing, cookie sessions, 5-min inactivity TTL |
+| OTP / notifications | Telegram Bot API (`reqwest`), on-screen fallback |
+| Money | rust_decimal over NUMERIC (never f64) |
+| Frontend | Tailwind CSS via CDN, HTMX, vanilla JS toasts |
+| Logging | tracing (every request traced with user id) |
 
-See **[ARCHITECTURE.md](./ARCHITECTURE.md)** for how the pieces fit and **[TEAM_CHARTER.md](./TEAM_CHARTER.md)** for who owns what.
+## Architecture (summary)
 
----
+```
+Browser ──HTTP──▶ SessionMiddleware ─▶ ActivityGuard ─▶ RequireRole ─▶ Handler (thin)
+                                                                          │
+                                            Askama template ◀── Service trait (thick)
+                                                                          │
+                                                          SQLx transactions, FOR UPDATE
+                                                                          │
+                                                                    PostgreSQL 16
+                                                                          ▲
+                              Telegram Bot API ◀── OtpChannel / poller ───┘
+```
 
-## Modules
+Handlers parse and render; **all business rules live behind service traits**
+(`AuthService`, `AccountService`, `TransferService`, `LoanService`,
+`ActionOtpService`, `AuditService`, `AdminService`), consumed as
+`Arc<dyn Trait>` — encapsulation, abstraction, and runtime polymorphism.
+`ActivityGuard` adds a per-user request trail, the 5-minute inactivity TTL
+(measured on database time), and mandatory Telegram linking for customers.
 
-| Module | Owner | Description |
-|---|---|---|
-| Auth | M2 | Registration (first/middle/last name), login, argon2 password hashing, cookie sessions, roles (customer/teller/admin), personalized greeting |
-| Accounts | M3 | Open/close/freeze accounts, balances, savings & checking, **teller-approved opening** (pending → active), admin balance adjustments |
-| Transfers | M4 | ACID money movement, **Mutex rate-limit + row-lock concurrency + explicit rollback**, OTP confirm (Telegram or on-screen), no self-transfers (service + DB trigger), rejection reasons, fraud rules, audit log, **generalized OTP guard** for account opening / loan applications / profile changes |
-| Loans | M5 | Applications, simple-interest model, **dual approval (teller + admin)**, repayments that debit a funding account |
-| Admin & Staff | M1 (Platform Lead) | Admin dashboard with fraud signals, searchable audit log, all-accounts CRUD; staff (teller) area for account approval and transfer review |
+Key flows, diagrams, and the ER model: **[docs/FLOWS.md](./docs/FLOWS.md)**,
+**[docs/uml_domain_model.mermaid](./docs/uml_domain_model.mermaid)**,
+**[docs/uml_service_architecture.mermaid](./docs/uml_service_architecture.mermaid)**,
+**[docs/er_diagram.mermaid](./docs/er_diagram.mermaid)**, with a deeper
+narrative in **[docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md)**.
 
-See **[TEAM_CHARTER.md](./TEAM_CHARTER.md)** for each member's group baseline and their individual extended feature (which together cover the 60% group + 40% individual marking criteria).
+## File layout
 
-## Roles & access
-
-| Role | Lands on | Can do |
-|---|---|---|
-| Customer | `/accounts` | Open accounts (pending approval), transfer money (OTP), apply for and repay loans |
-| Teller | `/loans` | Review **all** loans + record the teller approval; **approve accounts** and view all transfers under `/staff/*` |
-| Admin | `/admin/dashboard` | Everything: dashboard + fraud signals, audit log, full account CRUD, the admin loan approval |
-
-> Banking-domain highlights for the spec: a concurrency-safe transfer engine (Mutex + `SELECT … FOR UPDATE` + rollback), OTP simulation, audit logging, fraud detection (large / structuring / velocity / rejected), and dual-control approvals. See **[docs/uml_domain_model.mermaid](./docs/uml_domain_model.mermaid)** and **[docs/uml_service_architecture.mermaid](./docs/uml_service_architecture.mermaid)** for the class diagrams.
-
----
+```
+migrations/        001–007, one per module (users · accounts · transfers ·
+                   audit+notifications · loans · repayments · action_otps)
+src/
+  main.rs          wiring: config, pool, services, middleware, shutdown snapshot
+  config.rs        env-driven configuration (DATABASE_URL, TELEGRAM_BOT_TOKEN, …)
+  db.rs            Postgres pool
+  errors.rs        AppError → HTTP mapping (renders error.html)
+  state.rs         AppState (pool, config, bot username)
+  view.rs          LayoutCtx, shared OtpConfirmPage
+  middleware/      CurrentUser extractor · RequireRole · ActivityGuard
+  models/          user · account · transfer · loan (+ enums)
+  services/        the seven traits + Pg impls · telegram channel/poller
+  handlers/        home · auth · accounts · transfers · loans · settings · admin
+  bin/seed.rs      idempotent demo data
+templates/         Askama: layout + per-module pages, otp_confirm, review queues
+tests/             transfer concurrency/double-spend + shutdown snapshot
+docs/              architecture, flows, UML/ER, demo scenarios, runsheet,
+                   report outline, proposal, file guide
+```
 
 ## Running FerroBank
 
-There are three supported ways to run the project. All serve the app at
-<http://localhost:8080>.
-
-- **Fully local (no Docker)** — run the app with Cargo against a natively
-  installed PostgreSQL. Works anywhere; nothing in the app depends on Docker.
-- **Docker** — one command builds and starts Postgres, the app, and the demo
-  data. No Rust toolchain required.
-- **Local (`cargo`) + Docker Postgres** — run the app natively against a
-  Postgres container. Best for active Rust development and fast rebuilds.
+All options serve <http://localhost:8080>. **Docker is optional** — choose A
+if you don't want it at all.
 
 ### Prerequisites
 
-| Tool | Docker run | Local run |
-|---|---|---|
-| Docker Desktop | required | required (for Postgres) — or none with a native Postgres (Option A) |
-| Rust toolchain (rustup) | not needed | required |
-| SQLx CLI | not needed | optional (only to author new migrations) |
-
-One-time installs:
-
-```bash
-# macOS
-brew install --cask docker          # then: open -a Docker
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh   # Rust (local run only)
-```
-
-```powershell
-# Windows (PowerShell) — restart the shell afterwards so PATH updates
-winget install Docker.DockerDesktop  # launch it once from the Start Menu
-winget install Rustlang.Rustup       # Rust (local run only)
-```
-
-> No `winget`? Grab installers from <https://www.docker.com/products/docker-desktop/>
-> and <https://rustup.rs/>. On Windows, Git Bash lets you follow the macOS
-> commands (`cp`, `openssl`, `source`) verbatim.
-
----
+| Tool | A · Fully local | B · Docker | C · Hybrid |
+|---|---|---|---|
+| Rust toolchain (rustup) | required | not needed | required |
+| PostgreSQL 16 | native install | via Docker | via Docker |
+| Docker Desktop | **not needed** | required | required (DB only) |
 
 ### Option A — Fully local (no Docker)
 
-Nothing in the app depends on Docker — it just connects to whatever
-`DATABASE_URL` points at and applies its own migrations on startup. So if
-Docker isn't an option, install PostgreSQL natively and create the role +
-database the `.env` expects:
-
 ```bash
 # macOS (Homebrew)
-brew install postgresql@16
-brew services start postgresql@16
-
+brew install postgresql@16 && brew services start postgresql@16
 createuser ferrobank --createdb
 createdb ferrobank --owner=ferrobank
 psql -d ferrobank -c "ALTER USER ferrobank WITH PASSWORD 'ferrobank';"
 ```
 
 ```powershell
-# Windows — install from https://www.postgresql.org/download/windows/
-# then in the bundled "SQL Shell (psql)" as the postgres superuser:
+# Windows — installer from postgresql.org, then in "SQL Shell (psql)":
 CREATE ROLE ferrobank WITH LOGIN PASSWORD 'ferrobank' CREATEDB;
 CREATE DATABASE ferrobank OWNER ferrobank;
 ```
 
-The default `DATABASE_URL` in `.env.example`
-(`postgres://ferrobank:ferrobank@localhost:5432/ferrobank`) already matches, so
-the remaining steps are just:
+Then:
 
 ```bash
-cp .env.example .env          # then paste in a SESSION_SECRET (openssl rand -base64 64)
+cp .env.example .env     # set SESSION_SECRET (openssl rand -base64 64) + TELEGRAM_BOT_TOKEN
 cargo run --bin seed && cargo run
 ```
 
-To wipe and reseed from scratch: `dropdb ferrobank && createdb ferrobank --owner=ferrobank`,
-then run the seed again.
-
----
+Reset from scratch: `dropdb ferrobank && createdb ferrobank --owner=ferrobank`, reseed.
 
 ### Option B — Docker (full stack)
 
 ```bash
-cp .env.example .env          # optional, but recommended: set your own SESSION_SECRET
-docker compose up --build
-```
-
-That builds and starts three services:
-
-| Service | What it does |
-|---|---|
-| `db` | PostgreSQL 16 (data persisted in the `ferrobank_pg` volume) |
-| `app` | The FerroBank server — applies migrations on startup, serves on `:8080` |
-| `seed` | One-shot job: applies migrations, inserts demo data, then **exits** (showing as "exited" is expected) |
-
-Common variations:
-
-```bash
-docker compose up --build -d                            # run in the background
-docker compose logs -f app                              # tail the app logs
-docker compose down                                     # stop everything (keeps data)
-docker compose down -v && docker compose up --build     # wipe all data and reseed from scratch
-```
-
-The seed is idempotent, so it's safe on every `up`. To run a **clean instance with
-no demo data** (e.g. for a real deployment), re-add `profiles: ["seed"]` to the
-`seed` service in `docker-compose.yml`; it will then only run when you ask for it
-explicitly with `docker compose run --rm seed`.
-
----
-
-### Option C — Local (`cargo`)
-
-Postgres still runs in Docker; only the app runs natively.
-
-```bash
-# 1. Start just Postgres
-docker compose up -d db
-
-# 2. Configure env
 cp .env.example .env
-
-# 3. Generate a 64+ byte session secret and paste it into .env as SESSION_SECRET=...
-openssl rand -base64 64
-
-# 4. Seed demo data (this also applies migrations)
-cargo run --bin seed
-
-# 5. Run the app (also applies any pending migrations on startup)
-cargo run
+docker compose up --build      # db + app + one-shot idempotent seed
 ```
 
-Steps 4 + 5 can be combined into a single command — the server only starts if the
-seed succeeds (`&&` works in bash and PowerShell 7; use `;` in older PowerShell):
+Wipe and reseed: `docker compose down -v && docker compose up --build`.
+
+### Option C — Local app + Docker Postgres
 
 ```bash
+docker compose up -d db
+cp .env.example .env
 cargo run --bin seed && cargo run
 ```
 
-Windows PowerShell equivalent for steps 2–3:
+## Telegram OTP & notifications
 
-```powershell
-Copy-Item .env.example .env
-$bytes = New-Object byte[] 64
-[System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
-[Convert]::ToBase64String($bytes)
-```
+Create a bot with **@BotFather** (`/newbot`), put the token in `.env` as
+`TELEGRAM_BOT_TOKEN`, restart. Customers are then **required** to link
+Telegram after first sign-in (guide page with a deep link; it refreshes
+itself when the bot confirms). Every one-time code — transfers, account
+opening, loan applications, profile changes — and every account update
+(approvals, holds, declines, freezes) is delivered there; codes never appear
+on screen for linked users. Bot commands: `/unlink`, `/help`. Without a
+token the app falls back to on-screen demo codes.
 
-> **No SQLx CLI needed to get started.** Both the app and the seed binary run the
-> migrations automatically on startup, and the Postgres container already creates
-> the `ferrobank` database — so `sqlx database create` / `sqlx migrate run` are not
-> required just to boot. Install `sqlx-cli` only when you want to *author* new
-> migrations (see Development workflow).
+## Seeded users
 
----
+All passwords follow `<name>123`. Customers have NRICs on file; staff have none.
 
-### Default seeded users
-
-Created by the `seed` job (Docker) or `cargo run --bin seed` (local):
-
-| Email | Password | Role |
+| Email | Role | Notes |
 |---|---|---|
-| `admin@ferrobank.local`   | `admin123` *(change me)* | Admin |
-| `teller@ferrobank.local`  | `teller123`  | Teller |
-| `alice@ferrobank.local`   | `alice123`   | Customer |
-| `bob@ferrobank.local`     | `bob123`     | Customer |
-| `charlie@ferrobank.local` | `charlie123` | Customer |
-| `diana@ferrobank.local`   | `diana123`   | Customer |
+| `admin@ferrobank.local` | Admin | dashboard, audit, race demo, reviews |
+| `teller@ferrobank.local` | Teller | approvals, reviews, all transfers |
+| `alice@ferrobank.local` | Customer | savings $5,000 + checking $2,500 · **limit-change hold = 10 s (demo)** |
+| `bob@ferrobank.local` | Customer | savings $1,200 + checking $800 |
+| `charlie@ferrobank.local` | Customer | checking $350 · seeded velocity burst |
+| `diana@ferrobank.local` | Customer | savings $0 |
+| `eve@ferrobank.local` | Customer | savings $7,500 + checking $1,500 |
+| `frank@ferrobank.local` | Customer | checking $600 |
 
-The seed calls `AuthService::register` for each user, so passwords are hashed with
-the same argon2id path production uses. It also creates demo accounts, loans,
-transfers, and audit entries so the dashboards have something to show. Re-running
-it is safe — existing rows are skipped.
+Plus seeded loans and historical transfers that trip every fraud rule
+(structuring $9,999 · large $12,500 · a rejection · a velocity burst).
 
-*These dev seeds exist so teammates can log in without registering on every fresh
-database. Remove them (or rotate the passwords) before any real deployment.*
+## Security controls (quick reference)
 
----
+- OTP on **every** sensitive action (argon2-hashed, single-use, 10-min TTL, 3 strikes)
+- No self-transfers (service check + DB trigger)
+- Per-transfer limits; increases held 12 h (consent popup) before applying
+- Fraud holds: ≥$10k, $9k–10k structuring, >50% drain of a >$5k balance,
+  4+/1 h velocity → customer states purpose + NRIC → staff release/deny
+- Auto-freeze after 3 overdraft attempts in 24 h (suspected hijack)
+- 5-minute inactivity TTL on database time; per-user request trail in the log
+- Pending loans expire after 7 days; graceful shutdown writes a state snapshot
 
-## Telegram OTP (extended feature)
-
-With `TELEGRAM_BOT_TOKEN` set in `.env`, transfer one-time codes are delivered
-to the user's Telegram instead of being shown on screen — a realistic
-out-of-band verification channel.
-
-Setup (once per deployment):
-
-1. In Telegram, message **@BotFather** → `/newbot` → choose a name and username.
-2. Paste the token it returns into `.env` as `TELEGRAM_BOT_TOKEN=...`.
-3. Restart the app. The log line `telegram OTP delivery enabled` confirms it.
-
-Each user then links their own account: **Settings → One-time codes in
-Telegram** (`/settings/telegram`) shows a guide and a deep link that opens the
-bot with a single-use code; pressing **Start** completes the link. Users who
-haven't linked (or if the token is unset) automatically fall back to the
-on-screen demo code, so the app always works.
-
-The bot also accepts commands (registered in its menu): `/unlink` removes the
-link straight from the chat (updates the database immediately; codes go back
-on screen), and `/help` lists the commands. One-time codes gate **every**
-sensitive action, not just transfers: account opening, loan applications, and
-profile changes (e.g. unlinking Telegram from the website) all go through the
-shared `action_otps` confirmation flow.
-
-See `docs/FLOWS.md` §7 for the sequence diagram and
-`src/services/telegram_service.rs` for the `OtpChannel` trait
-(`TelegramOtp` / `ScreenOtp` — runtime polymorphism, same pattern as the
-other services).
-
----
-
-## Development workflow
+## Testing
 
 ```bash
-cargo fmt                       # before every commit
-cargo clippy --all-targets      # CI runs this
-cargo test                      # unit + integration tests
-cargo sqlx prepare              # when you add new SQL queries
+cargo test                                    # unit tests run anywhere
+cargo test --test transfer_concurrency -- --nocapture   # needs live Postgres
+cargo test --test shutdown_snapshot -- --nocapture
 ```
 
-### Adding a migration
+The concurrency tests prove the engine's invariants: no race conditions, no
+inconsistent balances, no double spending. The same thing is clickable at
+**Admin → Race demo**.
 
-```bash
-sqlx migrate add <descriptive_name>
-# edit the generated file
-sqlx migrate run
-```
+## Documentation
 
-**Coordinate the migration number in the team chat before you write it** — see TEAM_CHARTER.md.
-
----
-
-## Project structure
-
-See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full layout and the contract every module follows.
-
-```
-src/
-├── main.rs           # boot
-├── routes.rs         # mounts every module
-├── middleware/       # auth guard, session
-├── models/           # one file per domain entity
-├── services/         # business logic, trait-based
-└── handlers/         # Actix routes, one file per module
-templates/            # Askama, one folder per module
-migrations/           # SQLx migrations, numbered
-```
-
----
-
-## Submission deliverables (spec v1.2)
-
-| # | File | Format | Max size |
-|---|---|---|---|
-| 1 | Source code archive | `g##_source.zip` | 20 MB |
-| 2 | Demo recording (15 min) | `g##_recording.mp4` | 200 MB |
-| 3 | Presentation slides | `g##_slides.pptx` + `g##_slides.pdf` | 20 MB each |
-| 4 | Project report (≤6 pages) | `g##_report.docx` + `g##_report.pdf` | 20 MB each |
-
-Every file must show **Group Number, Student Name(s), Student ID(s) (SIT)** on the cover / title.
-The report must explain each member's group contribution and their individual extended feature,
-and should be informed by a brief literature review of real banking systems (Cyclos, Mambu,
-open-source core banking projects) — see the Literature section in [TEAM_CHARTER.md](./TEAM_CHARTER.md).
-
----
-
-## License
-
-MIT — see LICENSE.
+Everything beyond this README lives in [`docs/`](./docs): architecture
+narrative, sequence diagrams, UML + ER models, demo scenarios, the
+presentation runsheet, the report outline, and the planning proposal.

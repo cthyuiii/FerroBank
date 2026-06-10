@@ -209,3 +209,15 @@ layout provides the nav, footer, light/dark theme, and the table-search helper.
 | `tests/shutdown_snapshot.rs` | Verifies the graceful-shutdown `system.snapshot` audit row |
 | `docs/FLOWS.md` | Mermaid sequence diagrams for every workflow |
 | `PROPOSAL.md` | Formative-assessment-style proposal draft (rewrite before submitting) |
+
+
+## Security-hardening pass additions
+
+| File | What it is |
+|---|---|
+| `migrations/001–007` (consolidated) | One clean migration per module — names/NRIC/Telegram on users, transfer limits + `limit_changes`, `on_hold` transfers + `transfer_reviews`, `notifications`, loan disbursement, `action_otps` |
+| `src/middleware/auth.rs::ActivityGuard` | Global middleware: per-user request log, 5-min inactivity TTL on DB time, mandatory Telegram linking for customers |
+| `src/handlers/transfers.rs` (review) + `templates/transfers/review.html` | Customer side of the fraud-hold pipeline (purpose + NRIC) |
+| `src/handlers/admin.rs` (review queue) + `templates/admin/review.html` | Staff release/deny queue with NRIC comparison |
+| `templates/otp_confirm.html` + `src/services/action_otp_service.rs` | One OTP page + service guarding every sensitive action |
+| `docs/er_diagram.mermaid` | Entity-relationship diagram of the full schema |

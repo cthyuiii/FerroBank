@@ -15,6 +15,9 @@ pub enum TransferStatus {
     Failed,
     /// Refused for a business reason (insufficient funds, frozen account, fraud rule).
     Rejected,
+    /// Fraud rules tripped at confirm time. Money has NOT moved; the customer
+    /// submits a review request and staff release or deny it.
+    OnHold,
 }
 
 impl TransferStatus {
@@ -24,6 +27,7 @@ impl TransferStatus {
             TransferStatus::Completed => "Completed",
             TransferStatus::Failed => "Failed",
             TransferStatus::Rejected => "Rejected",
+            TransferStatus::OnHold => "On hold",
         }
     }
 
@@ -34,6 +38,7 @@ impl TransferStatus {
             TransferStatus::Pending => "bg-amber-50 text-amber-700 border-amber-200",
             TransferStatus::Failed => "bg-stone-100 text-stone-600 border-stone-200",
             TransferStatus::Rejected => "bg-red-50 text-red-700 border-red-200",
+            TransferStatus::OnHold => "bg-purple-50 text-purple-700 border-purple-200",
         }
     }
 }

@@ -28,7 +28,7 @@ prose over screenshots, and put one or two diagrams where they earn their space.
   surface), abstraction (six service traits), polymorphism (`dyn Trait` dynamic dispatch +
   generics + enum behaviour), inheritance-substitute (supertraits + composition in `AdminService`).
 - Insert the **UML class diagram(s)** from `docs/uml_*.mermaid` (domain model + service architecture).
-- Name the four core objects from the tutorial and where each lives (Account, Transfer/Engine, AuditLog).
+- Name the four core objects from the coursework and where each lives (Account, Transfer/Engine, AuditLog).
 
 ## 3. Database design  (~0.75 pg) — *Database 10%*
 - ER overview: `users, accounts, transfers, loans, loan_approvals, repayments, audit_log`.
@@ -77,3 +77,8 @@ prose over screenshots, and put one or two diagrams where they earn their space.
 | 6 Individual features | 1.0 | Individual (40%) |
 | 7–8 Testing/limits/conclusion | 0.5 | Documentation |
 | **Total** | **~6** | |
+
+
+---
+
+Related documents: [PROPOSAL.md](./PROPOSAL.md) (planning draft), [ARCHITECTURE.md](./ARCHITECTURE.md), [FLOWS.md](./FLOWS.md) (sequence diagrams), [er_diagram.mermaid](./er_diagram.mermaid), [DEMO_SCENARIOS.md](./DEMO_SCENARIOS.md), [PRESENTATION_SCRIPT.md](./PRESENTATION_SCRIPT.md).

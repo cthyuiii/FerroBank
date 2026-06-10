@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2021"
 authors = ["FerroBank Team"]
 description = "Iron-clad core banking, built in Rust"
-license = "MIT"
 # The crate ships two binaries (the server `ferrobank` and the `seed` tool), so
 # tell cargo which one plain `cargo run` should launch.
 default-run = "ferrobank"
@@ -13,7 +12,6 @@ default-run = "ferrobank"
 # Web framework
 actix-web = "4.4"
 actix-session = { version = "0.9", features = ["cookie-session"] }
-actix-files = "0.6"
 
 # Templating (server-side rendering)
 askama = { version = "0.12", features = ["with-actix-web"] }

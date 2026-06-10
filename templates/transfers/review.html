@@ -1,0 +1,64 @@
+{% extends "layout.html" %}
+
+{% block title %}Transfer under review · FerroBank{% endblock %}
+
+{% block content %}
+<section class="max-w-lg mx-auto py-10">
+  <span class="text-xs font-semibold uppercase tracking-wider text-purple-700">Transfers · Security review</span>
+  <h1 class="text-3xl font-semibold text-stone-900 mt-1">This transfer is on hold</h1>
+  <p class="mt-2 text-sm text-stone-600">
+    Our fraud rules flagged transfer <span class="font-mono">#{{ transfer.id }}</span>
+    as potentially illegitimate. <strong>No money has moved.</strong> Tell us the
+    purpose of this transfer and confirm your identity — a member of staff will
+    review it and release or decline it. You'll be notified of the outcome.
+  </p>
+
+  <div class="mt-6 p-5 rounded-lg border border-purple-200 bg-purple-50 space-y-2">
+    <div class="flex items-center justify-between">
+      <span class="text-sm text-stone-500">Amount</span>
+      <span class="font-mono text-lg font-semibold text-stone-900">${{ transfer.amount }}</span>
+    </div>
+    {% if let Some(r) = transfer.status_reason %}
+      <div class="flex items-center justify-between">
+        <span class="text-sm text-stone-500">Flagged because</span>
+        <span class="text-sm text-purple-700">{{ r }}</span>
+      </div>
+    {% endif %}
+  </div>
+
+  {% if let Some(msg) = error %}
+    <div class="mt-4 p-3 rounded-md bg-red-50 border border-red-200 text-sm text-red-800">{{ msg }}</div>
+  {% endif %}
+
+  {% if submitted %}
+    <div class="mt-6 p-5 rounded-lg border border-emerald-200 bg-emerald-50">
+      <div class="text-sm font-semibold text-emerald-700">✓ Review request submitted</div>
+      <p class="mt-1 text-sm text-stone-700">
+        Staff will compare your details against our records and decide. You'll
+        get a notification here (and in Telegram, if linked) either way.
+      </p>
+    </div>
+    <a href="/transfers" class="inline-block mt-4 text-sm text-amber-700 hover:underline">← Back to transfers</a>
+  {% else %}
+    <form action="/transfers/{{ transfer.id }}/review" method="POST" class="mt-6 space-y-4">
+      <div>
+        <label for="purpose" class="block text-sm font-medium text-stone-700">Purpose of this transfer</label>
+        <textarea id="purpose" name="purpose" required rows="3" maxlength="500"
+                  placeholder="e.g. Deposit for a second-hand car purchase from this seller"
+                  class="mt-1 w-full px-3 py-2 rounded-md border border-stone-300 bg-white focus:outline-none focus:ring-2 focus:ring-amber-700 focus:border-amber-700"></textarea>
+      </div>
+      <div>
+        <label for="nric" class="block text-sm font-medium text-stone-700">Your NRIC</label>
+        <input type="text" id="nric" name="nric" required maxlength="20"
+               placeholder="as registered with the bank"
+               class="mt-1 w-full px-3 py-2 rounded-md border border-stone-300 bg-white font-mono focus:outline-none focus:ring-2 focus:ring-amber-700 focus:border-amber-700">
+        <p class="mt-1 text-xs text-stone-500">Staff verify this against the identity we hold on file.</p>
+      </div>
+      <button type="submit"
+              class="px-5 py-2.5 rounded-md bg-amber-700 text-white font-medium hover:bg-amber-800 transition">
+        Submit for review
+      </button>
+    </form>
+  {% endif %}
+</section>
+{% endblock %}

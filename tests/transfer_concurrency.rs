@@ -1,7 +1,7 @@
 //! Integration tests: the transfer engine under concurrent load.
 //!
 //! Together these prove the spec's guarantees for the Concurrency-Safe Money
-//! Transfer Engine — and the tutorial's invariants:
+//! Transfer Engine:
 //!
 //!   - prevents race conditions          (locks serialize the balance checks)
 //!   - prevents inconsistent balances    (sum of money is conserved, never negative)
@@ -60,6 +60,7 @@ async fn rig(fund_dollars: i64) -> Option<Rig> {
             first_name: "Concurrency".into(),
             middle_name: None,
             last_name: "Sender".into(),
+            nric: Some("T0000001A".into()),
             role: Role::Customer,
         })
         .await
@@ -71,6 +72,7 @@ async fn rig(fund_dollars: i64) -> Option<Rig> {
             first_name: "Concurrency".into(),
             middle_name: None,
             last_name: "Recipient".into(),
+            nric: Some("T0000002B".into()),
             role: Role::Customer,
         })
         .await

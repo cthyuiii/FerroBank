@@ -5,10 +5,23 @@ use askama::Template;
 
 use crate::errors::AppError;
 use crate::middleware::auth::CurrentUser;
+use crate::state::AppState;
 use crate::view::LayoutCtx;
 
 pub fn routes(cfg: &mut web::ServiceConfig) {
-    cfg.route("/", web::get().to(home));
+    cfg.route("/", web::get().to(home))
+        .route("/notifications", web::get().to(notifications));
+}
+
+/// Unseen notifications for the signed-in user, as a JSON array of strings.
+/// The base layout polls this and shows each message as a browser toast;
+/// fetching marks them seen, so every toast fires exactly once.
+async fn notifications(
+    state: web::Data<AppState>,
+    user: CurrentUser,
+) -> Result<HttpResponse, AppError> {
+    let msgs = crate::services::audit_service::take_unseen(&state.db, user.id).await;
+    Ok(HttpResponse::Ok().json(msgs))
 }
 
 #[derive(Template)]

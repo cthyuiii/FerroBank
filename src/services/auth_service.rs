@@ -20,6 +20,10 @@ pub trait AuthService: Send + Sync {
     async fn register(&self, new_user: NewUser) -> Result<User, AppError>;
     async fn login(&self, email: &str, password: &str) -> Result<User, AppError>;
     async fn find_by_id(&self, id: i64) -> Result<User, AppError>;
+    /// Profile change (OTP-gated by the caller): set a new login email.
+    async fn change_email(&self, user_id: i64, new_email: &str) -> Result<(), AppError>;
+    /// Profile change (OTP-gated by the caller): set a new password.
+    async fn change_password(&self, user_id: i64, new_password: &str) -> Result<(), AppError>;
 }
 
 pub struct PgAuthService {
@@ -58,8 +62,8 @@ impl AuthService for PgAuthService {
         let full_name = new_user.full_name();
         let user = sqlx::query_as::<_, User>(
             r#"
-            INSERT INTO users (email, password_hash, full_name, first_name, middle_name, last_name, role)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            INSERT INTO users (email, password_hash, full_name, first_name, middle_name, last_name, nric, role)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             RETURNING id, email, password_hash, full_name, first_name, middle_name, last_name, role, created_at
             "#,
         )
@@ -69,6 +73,7 @@ impl AuthService for PgAuthService {
         .bind(new_user.first_name.trim())
         .bind(new_user.middle_name.as_deref().map(str::trim).filter(|m| !m.is_empty()))
         .bind(new_user.last_name.trim())
+        .bind(new_user.nric.as_deref().map(str::trim).filter(|n| !n.is_empty()))
         .bind(new_user.role)
         .fetch_one(&self.db)
         .await
@@ -115,6 +120,33 @@ impl AuthService for PgAuthService {
         .fetch_optional(&self.db)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("user {id} not found")))
+    }
+
+    async fn change_email(&self, user_id: i64, new_email: &str) -> Result<(), AppError> {
+        sqlx::query(r#"UPDATE users SET email = $1 WHERE id = $2"#)
+            .bind(new_email.trim())
+            .bind(user_id)
+            .execute(&self.db)
+            .await
+            .map_err(|e| match &e {
+                sqlx::Error::Database(db) if db.is_unique_violation() => {
+                    AppError::Conflict("that email is already registered".into())
+                }
+                _ => AppError::from(e),
+            })?;
+        tracing::info!(user_id, "email changed");
+        Ok(())
+    }
+
+    async fn change_password(&self, user_id: i64, new_password: &str) -> Result<(), AppError> {
+        let hash = Self::hash_password(new_password)?;
+        sqlx::query(r#"UPDATE users SET password_hash = $1 WHERE id = $2"#)
+            .bind(&hash)
+            .bind(user_id)
+            .execute(&self.db)
+            .await?;
+        tracing::info!(user_id, "password changed");
+        Ok(())
     }
 }
 

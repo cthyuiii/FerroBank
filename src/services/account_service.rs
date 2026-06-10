@@ -6,6 +6,8 @@ use rust_decimal::Decimal;
 use sqlx::PgPool;
 
 use crate::errors::AppError;
+use chrono::{DateTime, Utc};
+
 use crate::models::account::{Account, AccountStatus, AccountType};
 
 #[async_trait]
@@ -32,6 +34,22 @@ pub trait AccountService: Send + Sync {
     async fn get_balance(&self, account_id: i64) -> Result<Decimal, AppError>;
     async fn get_by_id(&self, account_id: i64) -> Result<Account, AppError>;
     async fn list_for_user(&self, user_id: i64) -> Result<Vec<Account>, AppError>;
+
+    /// Customer requests a transfer-limit change. Decreases apply at once;
+    /// increases are held for the account's hold window (12 h default) before
+    /// taking effect — a hijacked session can't instantly raise and drain.
+    /// Returns the moment the new limit becomes effective.
+    async fn request_limit_change(
+        &self,
+        account_id: i64,
+        new_limit: Decimal,
+    ) -> Result<DateTime<Utc>, AppError>;
+
+    /// The most recent still-pending limit change for an account, if any.
+    async fn pending_limit_change(
+        &self,
+        account_id: i64,
+    ) -> Result<Option<(Decimal, DateTime<Utc>)>, AppError>;
 
     // ── Read-only methods exposed to the Admin Dashboard ─────────────
     async fn count_active(&self) -> Result<i64, AppError>;
@@ -79,7 +97,7 @@ impl AccountService for PgAccountService {
                 r#"
                 INSERT INTO accounts (user_id, account_number, kind, status, balance)
                 VALUES ($1, $2, $3, $4, 0)
-                RETURNING id, user_id, account_number, kind, status, balance, created_at
+                RETURNING id, user_id, account_number, kind, status, balance, transfer_limit, created_at
                 "#,
             )
             .bind(user_id)
@@ -238,7 +256,7 @@ impl AccountService for PgAccountService {
     async fn get_by_id(&self, account_id: i64) -> Result<Account, AppError> {
         sqlx::query_as::<_, Account>(
             r#"
-            SELECT id, user_id, account_number, kind, status, balance, created_at
+            SELECT id, user_id, account_number, kind, status, balance, transfer_limit, created_at
             FROM accounts
             WHERE id = $1
             "#,
@@ -252,7 +270,7 @@ impl AccountService for PgAccountService {
     async fn list_for_user(&self, user_id: i64) -> Result<Vec<Account>, AppError> {
         let rows = sqlx::query_as::<_, Account>(
             r#"
-            SELECT id, user_id, account_number, kind, status, balance, created_at
+            SELECT id, user_id, account_number, kind, status, balance, transfer_limit, created_at
             FROM accounts
             WHERE user_id = $1
             ORDER BY created_at DESC
@@ -262,6 +280,71 @@ impl AccountService for PgAccountService {
         .fetch_all(&self.db)
         .await?;
         Ok(rows)
+    }
+
+    async fn request_limit_change(
+        &self,
+        account_id: i64,
+        new_limit: Decimal,
+    ) -> Result<DateTime<Utc>, AppError> {
+        if new_limit <= Decimal::ZERO {
+            return Err(AppError::BadRequest("the limit must be positive".into()));
+        }
+
+        let (current, hold_seconds): (Decimal, i32) = sqlx::query_as(
+            r#"SELECT transfer_limit, limit_hold_seconds FROM accounts WHERE id = $1"#,
+        )
+        .bind(account_id)
+        .fetch_optional(&self.db)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("account {account_id} not found")))?;
+
+        if new_limit <= current {
+            // Lowering the limit reduces risk — apply immediately.
+            sqlx::query(r#"UPDATE accounts SET transfer_limit = $1 WHERE id = $2"#)
+                .bind(new_limit)
+                .bind(account_id)
+                .execute(&self.db)
+                .await?;
+            tracing::info!(account_id, %new_limit, "limit lowered immediately");
+            return Ok(Utc::now());
+        }
+
+        // Raising the limit: park it until the hold window matures. The
+        // transfer engine applies matured rows lazily before enforcing.
+        let (effective_at,): (DateTime<Utc>,) = sqlx::query_as(
+            r#"
+            INSERT INTO limit_changes (account_id, old_limit, new_limit, effective_at)
+            VALUES ($1, $2, $3, now() + ($4 || ' seconds')::interval)
+            RETURNING effective_at
+            "#,
+        )
+        .bind(account_id)
+        .bind(current)
+        .bind(new_limit)
+        .bind(hold_seconds.to_string())
+        .fetch_one(&self.db)
+        .await?;
+
+        tracing::info!(account_id, %new_limit, %effective_at, "limit increase parked");
+        Ok(effective_at)
+    }
+
+    async fn pending_limit_change(
+        &self,
+        account_id: i64,
+    ) -> Result<Option<(Decimal, DateTime<Utc>)>, AppError> {
+        let row: Option<(Decimal, DateTime<Utc>)> = sqlx::query_as(
+            r#"
+            SELECT new_limit, effective_at FROM limit_changes
+            WHERE account_id = $1 AND applied_at IS NULL AND effective_at > now()
+            ORDER BY effective_at DESC LIMIT 1
+            "#,
+        )
+        .bind(account_id)
+        .fetch_optional(&self.db)
+        .await?;
+        Ok(row)
     }
 
     // ── Admin Dashboard hooks ────────────────────────────────────────

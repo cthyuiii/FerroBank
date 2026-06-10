@@ -122,6 +122,34 @@
     {% block content %}{% endblock %}
   </main>
 
+  <!-- Notification toasts: polls /notifications (unseen messages for the
+       signed-in user) and pops each one once. Approvals, declines, holds,
+       freezes — they all surface here without a page refresh. -->
+  <div id="fb-toasts" class="fixed bottom-5 right-5 z-50 flex flex-col gap-2 max-w-sm"></div>
+  <script>
+    (function () {
+      function toast(msg) {
+        var el = document.createElement('div');
+        el.className = 'px-4 py-3 rounded-lg shadow-lg border border-stone-200 bg-white text-sm text-stone-800';
+        el.style.animation = 'fb-page-in .3s ease both';
+        el.textContent = msg;
+        document.getElementById('fb-toasts').appendChild(el);
+        setTimeout(function () { el.remove(); }, 12000);
+      }
+      function poll() {
+        fetch('/notifications', { credentials: 'same-origin' })
+          .then(function (r) { return r.ok ? r.json() : []; })
+          .then(function (msgs) { (msgs || []).forEach(toast); })
+          .catch(function () {});
+      }
+      // Only poll when someone is signed in (the server 401s otherwise).
+      if (document.querySelector('form[action="/logout"]')) {
+        poll();
+        setInterval(poll, 8000);
+      }
+    })();
+  </script>
+
   <footer class="border-t border-stone-200 bg-white mt-12">
     <div class="max-w-6xl mx-auto px-6 py-12">
       <div class="grid gap-8 sm:grid-cols-2 lg:grid-cols-5">

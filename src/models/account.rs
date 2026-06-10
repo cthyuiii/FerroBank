@@ -58,5 +58,7 @@ pub struct Account {
     pub kind: AccountType,
     pub status: AccountStatus,
     pub balance: Decimal,
+    /// Maximum amount allowed per single outgoing transfer.
+    pub transfer_limit: Decimal,
     pub created_at: chrono::DateTime<chrono::Utc>,
 }

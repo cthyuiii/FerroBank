@@ -63,6 +63,8 @@ pub struct NewUser {
     pub first_name: String,
     pub middle_name: Option<String>,
     pub last_name: String,
+    /// National ID — customers only; staff registrations pass `None`.
+    pub nric: Option<String>,
     pub role: Role,
 }
 

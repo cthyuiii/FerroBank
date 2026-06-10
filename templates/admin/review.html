@@ -1,0 +1,92 @@
+{% extends "layout.html" %}
+
+{% block title %}Held transfers · FerroBank{% endblock %}
+
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+  <div>
+    <span class="text-xs font-semibold uppercase tracking-wider text-purple-700">Staff · Fraud review</span>
+    <h1 class="text-3xl font-semibold text-stone-900 mt-1">Held transfers</h1>
+  </div>
+  <a href="/staff/transfers" class="text-sm text-stone-600 hover:text-amber-700">All transfers →</a>
+</div>
+
+{% if rows.is_empty() %}
+  <div class="p-10 rounded-lg border border-stone-200 bg-white text-center">
+    <div class="text-5xl mb-3">🛡️</div>
+    <h3 class="font-semibold text-stone-900">Nothing on hold</h3>
+    <p class="mt-1 text-sm text-stone-600">Transfers flagged by the fraud rules will queue here for review.</p>
+  </div>
+{% else %}
+  <div class="space-y-4">
+    {% for r in rows %}
+      <div class="p-5 rounded-lg border border-stone-200 bg-white">
+        <div class="flex items-start justify-between flex-wrap gap-3">
+          <div>
+            <div class="font-mono text-lg font-semibold text-stone-900">${{ r.amount }}</div>
+            <div class="text-sm text-stone-600">
+              {{ r.from_owner }} <span class="font-mono text-xs">({{ r.from_number }})</span>
+              → {{ r.to_owner }} <span class="font-mono text-xs">({{ r.to_number }})</span>
+            </div>
+            <div class="mt-1 text-xs text-stone-500">{{ r.created_at.format("%Y-%m-%d %H:%M") }} · transfer #{{ r.id }}</div>
+          </div>
+          {% if let Some(reason) = r.status_reason %}
+            <span class="text-xs px-2 py-1 rounded-full bg-purple-50 text-purple-700 border border-purple-200">{{ reason }}</span>
+          {% endif %}
+        </div>
+
+        {% if let Some(purpose) = r.purpose %}
+          <div class="mt-4 p-4 rounded-md bg-stone-50 border border-stone-200">
+            <div class="text-xs font-semibold uppercase tracking-wider text-stone-500">Customer's stated purpose</div>
+            <p class="mt-1 text-sm text-stone-700">{{ purpose }}</p>
+            <div class="mt-3 grid sm:grid-cols-2 gap-3 text-sm">
+              <div>
+                <div class="text-xs text-stone-500">NRIC claimed</div>
+                <div class="font-mono">{% if let Some(c) = r.nric_claimed %}{{ c }}{% else %}—{% endif %}</div>
+              </div>
+              <div>
+                <div class="text-xs text-stone-500">NRIC on file</div>
+                <div class="font-mono">{% if let Some(f) = r.nric_on_file %}{{ f }}{% else %}none recorded{% endif %}</div>
+              </div>
+            </div>
+            <p class="mt-2 text-xs text-stone-500">Verify the claim matches our records before releasing.</p>
+          </div>
+
+          <div class="mt-4 flex items-center gap-3 flex-wrap">
+            <form action="/staff/transfers/{{ r.id }}/release" method="POST">
+              <button type="submit"
+                      onclick="return confirm('Release transfer #{{ r.id }} for ${{ r.amount }}? The money will move immediately.');"
+                      class="px-4 py-2 rounded-md bg-emerald-700 text-white text-sm font-medium hover:bg-emerald-800 transition">
+                Release transfer
+              </button>
+            </form>
+            <form action="/staff/transfers/{{ r.id }}/deny" method="POST" class="flex items-center gap-2">
+              <input type="text" name="reason" placeholder="denial reason (optional)"
+                     class="px-3 py-2 rounded-md border border-stone-300 bg-white text-sm">
+              <button type="submit"
+                      onclick="return confirm('Deny transfer #{{ r.id }}?');"
+                      class="px-4 py-2 rounded-md border border-red-300 text-red-700 text-sm font-medium hover:bg-red-50 transition">
+                Deny
+              </button>
+            </form>
+          </div>
+        {% else %}
+          <div class="mt-4 p-3 rounded-md bg-amber-50 border border-amber-200 text-sm text-stone-700">
+            Waiting for the customer to submit their purpose and identity —
+            release is disabled until they do. (Deny is always available.)
+          </div>
+          <form action="/staff/transfers/{{ r.id }}/deny" method="POST" class="mt-3 flex items-center gap-2">
+            <input type="text" name="reason" placeholder="denial reason (optional)"
+                   class="px-3 py-2 rounded-md border border-stone-300 bg-white text-sm">
+            <button type="submit"
+                    onclick="return confirm('Deny transfer #{{ r.id }}?');"
+                    class="px-4 py-2 rounded-md border border-red-300 text-red-700 text-sm font-medium hover:bg-red-50 transition">
+              Deny
+            </button>
+          </form>
+        {% endif %}
+      </div>
+    {% endfor %}
+  </div>
+{% endif %}
+{% endblock %}

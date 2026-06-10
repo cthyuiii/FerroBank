@@ -7,8 +7,14 @@
 //! is documented in the report.
 
 use async_trait::async_trait;
+use chrono::Utc;
 use rust_decimal::Decimal;
 use sqlx::PgPool;
+
+use std::sync::Arc;
+
+use crate::services::audit_service::notify;
+use crate::services::telegram_service::OtpChannel;
 
 use crate::errors::AppError;
 use crate::models::account::AccountStatus;
@@ -17,12 +23,16 @@ use crate::models::user::Role;
 
 #[async_trait]
 pub trait LoanService: Send + Sync {
+    /// Submit an application. `disbursement_account_id` is where the
+    /// principal lands once the loan is fully approved (must be the
+    /// applicant's own active account).
     async fn apply(
         &self,
         user_id: i64,
         principal: Decimal,
         interest_rate: Decimal,
         term_months: i32,
+        disbursement_account_id: i64,
     ) -> Result<Loan, AppError>;
 
     /// Record one staff approval (teller or admin) for a pending loan. The loan
@@ -61,11 +71,13 @@ pub trait LoanService: Send + Sync {
 
 pub struct PgLoanService {
     db: PgPool,
+    /// Telegram delivery for loan decisions/due dates (browser toasts always fire).
+    otp_channel: Arc<dyn OtpChannel>,
 }
 
 impl PgLoanService {
-    pub fn new(db: PgPool) -> Self {
-        Self { db }
+    pub fn new(db: PgPool, otp_channel: Arc<dyn OtpChannel>) -> Self {
+        Self { db, otp_channel }
     }
 }
 
@@ -85,6 +97,7 @@ impl LoanService for PgLoanService {
         principal: Decimal,
         interest_rate: Decimal,
         term_months: i32,
+        disbursement_account_id: i64,
     ) -> Result<Loan, AppError> {
         // Defence-in-depth — the table CHECK constraints catch these too,
         // but a clear AppError beats a SQL error in the UX.
@@ -102,17 +115,34 @@ impl LoanService for PgLoanService {
             ));
         }
 
+        // The payout destination must be the applicant's own active account.
+        let acct: Option<(i64, AccountStatus)> =
+            sqlx::query_as(r#"SELECT user_id, status FROM accounts WHERE id = $1"#)
+                .bind(disbursement_account_id)
+                .fetch_optional(&self.db)
+                .await?;
+        match acct {
+            Some((owner, AccountStatus::Active)) if owner == user_id => {}
+            Some((owner, _)) if owner == user_id => {
+                return Err(AppError::BadRequest(
+                    "the chosen disbursement account is not active".into(),
+                ))
+            }
+            _ => return Err(AppError::Forbidden),
+        }
+
         let loan = sqlx::query_as::<_, Loan>(
             r#"
-            INSERT INTO loans (user_id, principal, interest_rate, term_months, status)
-            VALUES ($1, $2, $3, $4, 'pending')
-            RETURNING id, user_id, principal, interest_rate, term_months, status, created_at
+            INSERT INTO loans (user_id, principal, interest_rate, term_months, status, disbursement_account_id)
+            VALUES ($1, $2, $3, $4, 'pending', $5)
+            RETURNING id, user_id, principal, interest_rate, term_months, status, disbursement_account_id, next_payment_due, created_at
             "#,
         )
         .bind(user_id)
         .bind(principal)
         .bind(interest_rate)
         .bind(term_months)
+        .bind(disbursement_account_id)
         .fetch_one(&self.db)
         .await?;
 
@@ -138,7 +168,7 @@ impl LoanService for PgLoanService {
         // Lock the loan — only a pending loan can collect approvals.
         let loan: Loan = sqlx::query_as::<_, Loan>(
             r#"
-            SELECT id, user_id, principal, interest_rate, term_months, status, created_at
+            SELECT id, user_id, principal, interest_rate, term_months, status, disbursement_account_id, next_payment_due, created_at
             FROM loans
             WHERE id = $1
             FOR UPDATE
@@ -154,6 +184,26 @@ impl LoanService for PgLoanService {
                 "loan {loan_id} is {} and cannot be approved",
                 loan.status.label().to_lowercase()
             )));
+        }
+
+        // Pending-application TTL: stale applications (7 days) auto-expire.
+        if Utc::now() - loan.created_at > chrono::Duration::days(7) {
+            sqlx::query(
+                r#"UPDATE loans SET status = 'rejected', decided_at = now() WHERE id = $1"#,
+            )
+            .bind(loan_id)
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await?;
+            notify(
+                &self.db,
+                loan.user_id,
+                &format!("Loan application #{loan_id} expired after 7 days and was closed. Apply again if you still need it."),
+            )
+            .await;
+            return Err(AppError::Conflict(
+                "this application is older than 7 days and has expired".into(),
+            ));
         }
 
         // Record this role's approval. UNIQUE(loan_id, role) means a second
@@ -194,12 +244,39 @@ impl LoanService for PgLoanService {
         let fully_approved = counts.0 > 0 && counts.1 > 0;
 
         let result = if fully_approved {
+            // Disburse: credit the principal to the borrower's chosen account
+            // inside this same transaction. Real money arrives on approval.
+            if let Some(acct_id) = loan.disbursement_account_id {
+                let acct: Option<(AccountStatus,)> = sqlx::query_as(
+                    r#"SELECT status FROM accounts WHERE id = $1 FOR UPDATE"#,
+                )
+                .bind(acct_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+                match acct {
+                    Some((AccountStatus::Active,)) => {
+                        sqlx::query(
+                            r#"UPDATE accounts SET balance = balance + $1 WHERE id = $2"#,
+                        )
+                        .bind(loan.principal)
+                        .bind(acct_id)
+                        .execute(&mut *tx)
+                        .await?;
+                    }
+                    _ => {
+                        return Err(AppError::Conflict(
+                            "the borrower's disbursement account is not active — cannot approve".into(),
+                        ))
+                    }
+                }
+            }
             sqlx::query_as::<_, Loan>(
                 r#"
                 UPDATE loans
-                SET status = 'approved', decided_at = now()
+                SET status = 'approved', decided_at = now(),
+                    next_payment_due = now() + interval '1 month'
                 WHERE id = $1
-                RETURNING id, user_id, principal, interest_rate, term_months, status, created_at
+                RETURNING id, user_id, principal, interest_rate, term_months, status, disbursement_account_id, next_payment_due, created_at
                 "#,
             )
             .bind(loan_id)
@@ -210,6 +287,18 @@ impl LoanService for PgLoanService {
         };
 
         tx.commit().await?;
+        if fully_approved {
+            let due = result
+                .next_payment_due
+                .map(|d| d.format("%Y-%m-%d").to_string())
+                .unwrap_or_else(|| "next month".into());
+            let msg = format!(
+                "Loan #{loan_id} APPROVED — ${} disbursed to your chosen account. First repayment due {due}.",
+                result.principal
+            );
+            notify(&self.db, result.user_id, &msg).await;
+            self.otp_channel.send_note(result.user_id, &msg).await;
+        }
         tracing::info!(loan_id, ?slot, fully_approved, "loan approval recorded");
         Ok(result)
     }
@@ -236,7 +325,7 @@ impl LoanService for PgLoanService {
             UPDATE loans
             SET status = 'rejected', decided_at = now()
             WHERE id = $1 AND status = 'pending'
-            RETURNING id, user_id, principal, interest_rate, term_months, status, created_at
+            RETURNING id, user_id, principal, interest_rate, term_months, status, disbursement_account_id, next_payment_due, created_at
             "#,
         )
         .bind(loan_id)
@@ -246,6 +335,9 @@ impl LoanService for PgLoanService {
             AppError::Conflict(format!("loan {loan_id} is not pending or does not exist"))
         })?;
 
+        let msg = format!("Loan application #{loan_id} was declined after review.");
+        notify(&self.db, loan.user_id, &msg).await;
+        self.otp_channel.send_note(loan.user_id, &msg).await;
         tracing::info!(loan_id, "loan rejected");
         Ok(loan)
     }
@@ -266,7 +358,7 @@ impl LoanService for PgLoanService {
         // status from 'active' to 'paid_off' independently.
         let loan: Loan = sqlx::query_as::<_, Loan>(
             r#"
-            SELECT id, user_id, principal, interest_rate, term_months, status, created_at
+            SELECT id, user_id, principal, interest_rate, term_months, status, disbursement_account_id, next_payment_due, created_at
             FROM loans
             WHERE id = $1
             FOR UPDATE
@@ -343,13 +435,36 @@ impl LoanService for PgLoanService {
         } else {
             LoanStatus::Active
         };
-        sqlx::query(r#"UPDATE loans SET status = $1 WHERE id = $2"#)
+        // Paid off → no further due date; otherwise the clock advances a month.
+        if new_status == LoanStatus::PaidOff {
+            sqlx::query(r#"UPDATE loans SET status = $1, next_payment_due = NULL WHERE id = $2"#)
+                .bind(new_status)
+                .bind(loan_id)
+                .execute(&mut *tx)
+                .await?;
+        } else {
+            sqlx::query(
+                r#"UPDATE loans SET status = $1, next_payment_due = now() + interval '1 month' WHERE id = $2"#,
+            )
             .bind(new_status)
             .bind(loan_id)
             .execute(&mut *tx)
             .await?;
+        }
 
         tx.commit().await?;
+
+        let msg = if new_status == LoanStatus::PaidOff {
+            format!("Repayment of ${amount} received — loan #{loan_id} is fully PAID OFF. 🎉")
+        } else {
+            let due = (Utc::now() + chrono::Duration::days(30)).format("%Y-%m-%d");
+            format!(
+                "Repayment of ${amount} received for loan #{loan_id}. Outstanding: ${}. Next payment due {due}.",
+                outstanding.max(Decimal::ZERO).round_dp(2)
+            )
+        };
+        notify(&self.db, loan.user_id, &msg).await;
+        self.otp_channel.send_note(loan.user_id, &msg).await;
 
         tracing::info!(
             loan_id,
@@ -376,7 +491,7 @@ impl LoanService for PgLoanService {
     async fn get_by_id(&self, loan_id: i64) -> Result<Loan, AppError> {
         sqlx::query_as::<_, Loan>(
             r#"
-            SELECT id, user_id, principal, interest_rate, term_months, status, created_at
+            SELECT id, user_id, principal, interest_rate, term_months, status, disbursement_account_id, next_payment_due, created_at
             FROM loans
             WHERE id = $1
             "#,
@@ -390,7 +505,7 @@ impl LoanService for PgLoanService {
     async fn list_for_user(&self, user_id: i64) -> Result<Vec<Loan>, AppError> {
         let rows = sqlx::query_as::<_, Loan>(
             r#"
-            SELECT id, user_id, principal, interest_rate, term_months, status, created_at
+            SELECT id, user_id, principal, interest_rate, term_months, status, disbursement_account_id, next_payment_due, created_at
             FROM loans
             WHERE user_id = $1
             ORDER BY created_at DESC
@@ -422,7 +537,7 @@ impl LoanService for PgLoanService {
     async fn list_all(&self) -> Result<Vec<Loan>, AppError> {
         let rows = sqlx::query_as::<_, Loan>(
             r#"
-            SELECT id, user_id, principal, interest_rate, term_months, status, created_at
+            SELECT id, user_id, principal, interest_rate, term_months, status, disbursement_account_id, next_payment_due, created_at
             FROM loans
             ORDER BY created_at DESC
             "#,

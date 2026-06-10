@@ -12,6 +12,7 @@ use actix_web::{web, HttpResponse};
 use askama::Template;
 use rust_decimal::Decimal;
 use serde::Deserialize;
+use std::str::FromStr;
 
 use crate::errors::AppError;
 use crate::middleware::auth::CurrentUser;
@@ -32,7 +33,8 @@ pub fn routes(cfg: &mut web::ServiceConfig) {
             .route("/new/confirm", web::post().to(create_confirm))
             .route("/{id}", web::get().to(detail))
             .route("/{id}/freeze", web::post().to(freeze))
-            .route("/{id}/close", web::post().to(close)),
+            .route("/{id}/close", web::post().to(close))
+            .route("/{id}/limit", web::post().to(limit_change)),
     );
 }
 
@@ -68,6 +70,10 @@ struct DetailTemplate {
     can_manage: bool,
     /// Staff (teller/admin) — only they may freeze an account.
     is_staff: bool,
+    /// A limit increase waiting out its hold window: (new limit, effective at).
+    pending_limit: Option<(Decimal, chrono::DateTime<chrono::Utc>)>,
+    /// Inline outcome message for a just-submitted limit request.
+    limit_msg: Option<String>,
 }
 
 // ── Form payloads ────────────────────────────────────────────────────
@@ -199,7 +205,17 @@ async fn detail(
     svc: web::Data<dyn AccountService>,
     user: CurrentUser,
 ) -> Result<HttpResponse, AppError> {
-    let account_id = path.into_inner();
+    render_detail(path.into_inner(), &svc, &user, None).await
+}
+
+/// Shared by `detail` and `limit_change` so the limit form can show its
+/// outcome inline on the same page.
+async fn render_detail(
+    account_id: i64,
+    svc: &web::Data<dyn AccountService>,
+    user: &CurrentUser,
+    limit_msg: Option<String>,
+) -> Result<HttpResponse, AppError> {
     let account = svc.get_by_id(account_id).await?;
 
     // Customers can only see their own accounts. Staff can see any.
@@ -211,13 +227,68 @@ async fn detail(
     let can_manage = account.user_id == user.id || user.role != Role::Customer;
     // Only staff may freeze an account — normal users must not see that option.
     let is_staff = user.role != Role::Customer;
+    let pending_limit = svc.pending_limit_change(account_id).await?;
 
     render(DetailTemplate {
-        layout: LayoutCtx::from_user(Some(&user)),
+        layout: LayoutCtx::from_user(Some(user)),
         account,
         can_manage,
         is_staff,
+        pending_limit,
+        limit_msg,
     })
+}
+
+#[derive(Debug, Deserialize)]
+struct LimitForm {
+    new_limit: String,
+}
+
+/// Owner requests a transfer-limit change. The page's consent popup has
+/// already warned that increases are held (12 h, or this account's window)
+/// before taking effect.
+async fn limit_change(
+    path: web::Path<i64>,
+    form: web::Form<LimitForm>,
+    svc: web::Data<dyn AccountService>,
+    user: CurrentUser,
+) -> Result<HttpResponse, AppError> {
+    let account_id = path.into_inner();
+    let account = svc.get_by_id(account_id).await?;
+    if account.user_id != user.id {
+        return Err(AppError::Forbidden);
+    }
+
+    let new_limit = match Decimal::from_str(form.new_limit.trim()) {
+        Ok(d) => d,
+        Err(_) => {
+            return render_detail(
+                account_id,
+                &svc,
+                &user,
+                Some("The limit must be a number like 8000.00.".into()),
+            )
+            .await
+        }
+    };
+
+    match svc.request_limit_change(account_id, new_limit).await {
+        Ok(effective_at) => {
+            let msg = if new_limit <= account.transfer_limit {
+                format!("Limit lowered to ${new_limit} — effective immediately.")
+            } else {
+                format!(
+                    "Limit increase to ${new_limit} accepted. For your security it takes effect at {} (server time).",
+                    effective_at.format("%Y-%m-%d %H:%M:%S")
+                )
+            };
+            render_detail(account_id, &svc, &user, Some(msg)).await
+        }
+        Err(AppError::BadRequest(m)) | Err(AppError::Conflict(m)) => {
+            render_detail(account_id, &svc, &user, Some(m)).await
+        }
+        Err(other) => Err(other),
+    }
 }
 
 async fn freeze(

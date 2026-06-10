@@ -39,7 +39,9 @@
         <svg class="fb-icon-sun w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path stroke-linecap="round" stroke-linejoin="round" d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32 1.41 1.41M2 12h2m16 0h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
       </button>
       {% if let Some(u) = layout.user %}
-        <a href="/settings/telegram" class="text-stone-500 hover:text-amber-700 transition">Settings</a>
+        {% if u.role == "customer" %}
+          <a href="/settings/telegram" class="text-stone-500 hover:text-amber-700 transition">Settings</a>
+        {% endif %}
         <span class="hidden sm:inline text-stone-500">{{ u.email }}</span>
         <span class="text-xs px-2 py-0.5 rounded-full bg-stone-100 text-stone-700 border border-stone-200 capitalize">{{ u.role }}</span>
         <form action="/logout" method="POST" class="inline">

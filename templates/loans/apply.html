@@ -53,6 +53,17 @@
     </div>
 
     <div>
+      <label for="disbursement_account_id" class="block text-sm font-medium text-stone-700">Disburse to</label>
+      <select id="disbursement_account_id" name="disbursement_account_id" required
+              class="mt-1 w-full px-3 py-2 rounded-md border border-stone-300 bg-white">
+        {% for a in accounts %}
+          <option value="{{ a.id }}">{{ a.kind.label() }} · {{ a.account_number }} (${{ a.balance }})</option>
+        {% endfor %}
+      </select>
+      <p class="mt-1 text-xs text-stone-500">The approved principal is credited to this account.</p>
+    </div>
+
+    <div>
       <label for="term_months" class="block text-sm font-medium text-stone-700">Term</label>
       <div class="mt-1 flex">
         <input

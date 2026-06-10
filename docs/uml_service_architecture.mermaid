@@ -1,12 +1,13 @@
 classDiagram
-    direction LR
+    direction TB
 
-    %% ── Service traits (abstraction / common interfaces) ──
     class AuthService {
         <<trait>>
         +register(NewUser) User
         +login(email, pw) User
         +find_by_id(id) User
+        +change_email(user, email)
+        +change_password(user, pw)
     }
     class AccountService {
         <<trait>>
@@ -16,83 +17,94 @@ classDiagram
         +unfreeze_account(id)
         +close_account(id)
         +adjust_balance(id, delta) Decimal
-        +list_for_user(user) Vec~Account~
+        +request_limit_change(id, limit) DateTime
+        +pending_limit_change(id)
+        +list_for_user(user) List~Account~
     }
     class TransferService {
         <<trait>>
-        +create(...) TransferCreated
+        +create(actor, from, to, amount) TransferCreated
         +confirm(actor, id, otp) Transfer
-        +history(user) Vec~Transfer~
-        +recent(limit)
-        +flagged()
+        +history(user) List~Transfer~
+        +submit_review(actor, id, purpose, nric)
+        +list_held() List~HeldRow~
+        +release(reviewer, id)
+        +deny(reviewer, id, reason)
     }
     class LoanService {
         <<trait>>
-        +apply(...) Loan
+        +apply(user, principal, rate, term, account) Loan
         +approve(id, approver, role) Loan
         +reject(id) Loan
-        +approval_flags(id) (bool,bool)
-        +record_repayment(loan, amount, account) Repayment
+        +record_repayment(id, amount, account) Repayment
         +outstanding_balance(id) Decimal
-        +list_all() Vec~Loan~
+    }
+    class ActionOtpService {
+        <<trait>>
+        +begin(user, purpose, payload) ActionChallenge
+        +verify(user, action, purpose, otp) Json
     }
     class AuditService {
         <<trait>>
         +record(actor, event, payload)
-        +recent(limit) Vec~AuditEntry~
+        +recent(limit) List~AuditEntry~
     }
     class AdminService {
         <<trait>>
         +snapshot() DashboardSnapshot
-        +all_accounts() Vec~AdminAccountRow~
-        +all_transfers(from, to) Vec~AdminTransferRow~
-        +customers() Vec~AdminUserRow~
+        +all_accounts()
+        +all_transfers(from, to)
+    }
+    class OtpChannel {
+        <<trait>>
+        +send_otp(user, otp) bool
+        +send_note(user, text) bool
     }
 
-    %% ── Concrete Postgres implementations ──
-    class PgAuthService { -PgPool db }
-    class PgAccountService { -PgPool db }
+    class PgAuthService
+    class PgAccountService
     class PgTransferService {
         -PgPool db
         -Arc~AuditService~ audit
+        -Arc~OtpChannel~ otp_channel
         -Mutex~HashMap~ rate_limit
     }
-    class PgLoanService { -PgPool db }
-    class PgAuditService { -PgPool db }
-    class PgAdminService {
+    class PgLoanService
+    class PgActionOtpService
+    class PgAuditService
+    class PgAdminService
+    class TelegramOtp {
         -PgPool db
-        -Option~AccountService~ accounts
-        -Option~TransferService~ transfers
-        -Option~LoanService~ loans
-        -Option~AuditService~ audit
+        -reqwest Client http
     }
+    class ScreenOtp
 
     AuthService <|.. PgAuthService : implements
     AccountService <|.. PgAccountService : implements
     TransferService <|.. PgTransferService : implements
     LoanService <|.. PgLoanService : implements
+    ActionOtpService <|.. PgActionOtpService : implements
     AuditService <|.. PgAuditService : implements
     AdminService <|.. PgAdminService : implements
+    OtpChannel <|.. TelegramOtp : implements
+    OtpChannel <|.. ScreenOtp : implements
 
-    PgTransferService ..> AuditService : audits via
-    PgAdminService ..> AccountService : composes
-    PgAdminService ..> TransferService : composes
-    PgAdminService ..> LoanService : composes
-    PgAdminService ..> AuditService : composes
+    PgTransferService o-- AuditService : composes
+    PgTransferService o-- OtpChannel : composes
+    PgActionOtpService o-- OtpChannel : composes
+    PgAdminService o-- AccountService : composes
+    PgAdminService o-- LoanService : composes
+    PgAdminService o-- AuditService : composes
 
-    %% ── HTTP layer ──
     class Handlers {
-        home  auth  accounts
-        transfers  loans  admin
+        thin: parse form, call trait, render template
     }
-    class Middleware {
-        CurrentUser (extractor)
-        RequireRole (guard)
+    class ActivityGuard {
+        <<middleware>>
+        activity trail + 5-min TTL + link enforcement
     }
-    Handlers ..> AuthService : web::Data~dyn~
-    Handlers ..> AccountService
-    Handlers ..> TransferService
-    Handlers ..> LoanService
-    Handlers ..> AdminService
-    Handlers ..> Middleware
-    PgTransferService ..> PgPool : SELECT ... FOR UPDATE
+    Handlers ..> AuthService : Arc~dyn Trait~
+    Handlers ..> AccountService : Arc~dyn Trait~
+    Handlers ..> TransferService : Arc~dyn Trait~
+    Handlers ..> LoanService : Arc~dyn Trait~
+    Handlers ..> ActionOtpService : Arc~dyn Trait~

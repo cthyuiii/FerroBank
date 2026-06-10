@@ -16,7 +16,9 @@ use sqlx::Connection as _;
 
 use ferrobank::{
     config::Config,
-    db, routes,
+    db,
+    middleware::auth::ActivityGuard,
+    routes,
     services::{
         account_service::{AccountService, PgAccountService},
         action_otp_service::{ActionOtpService, PgActionOtpService},
@@ -94,7 +96,8 @@ async fn main() -> anyhow::Result<()> {
         audit_service.clone(),
         otp_channel.clone(),
     ));
-    let loan_service: Arc<dyn LoanService> = Arc::new(PgLoanService::new(pool.clone()));
+    let loan_service: Arc<dyn LoanService> =
+        Arc::new(PgLoanService::new(pool.clone(), otp_channel.clone()));
     // Generalized OTP guard for account opening / loan applications / profile changes.
     let action_otp_service: Arc<dyn ActionOtpService> =
         Arc::new(PgActionOtpService::new(pool.clone(), otp_channel.clone()));
@@ -134,6 +137,9 @@ async fn main() -> anyhow::Result<()> {
             .app_data(audit_data.clone())
             .app_data(action_otp_data.clone())
             .wrap(TracingLogger::default())
+            // Runs after the session middleware: activity trail, 5-minute
+            // inactivity TTL (database time), mandatory Telegram linking.
+            .wrap(ActivityGuard)
             .wrap(
                 SessionMiddleware::builder(CookieSessionStore::default(), session_key.clone())
                     .cookie_name("ferrobank_session".to_string())
@@ -141,7 +147,6 @@ async fn main() -> anyhow::Result<()> {
                     .cookie_http_only(true)
                     .build(),
             )
-            .service(actix_files::Files::new("/static", "./static"))
             .configure(routes::configure)
     })
     .bind((bind_host, bind_port))?

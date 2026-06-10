@@ -9,8 +9,10 @@ use askama::Template;
 use rand::Rng;
 
 use crate::errors::AppError;
-use crate::services::action_otp_service::ActionOtpService;
 use crate::middleware::auth::CurrentUser;
+use crate::models::user::Role;
+use crate::services::action_otp_service::ActionOtpService;
+use crate::services::auth_service::AuthService;
 use crate::state::AppState;
 use crate::view::{LayoutCtx, OtpConfirmPage};
 
@@ -18,8 +20,13 @@ pub fn routes(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope("/settings")
             .route("/telegram", web::get().to(telegram_page))
+            .route("/telegram/status", web::get().to(telegram_status))
             .route("/telegram/unlink", web::post().to(telegram_unlink))
-            .route("/telegram/unlink/confirm", web::post().to(telegram_unlink_confirm)),
+            .route("/telegram/unlink/confirm", web::post().to(telegram_unlink_confirm))
+            .route("/email", web::post().to(email_change))
+            .route("/email/confirm", web::post().to(email_change_confirm))
+            .route("/password", web::post().to(password_change))
+            .route("/password/confirm", web::post().to(password_change_confirm)),
     );
 }
 
@@ -35,10 +42,20 @@ struct TelegramTemplate {
     link_url: Option<String>,
 }
 
+/// Staff have no bank accounts, no transfers, and no OTP flows — the page is
+/// customers-only, exactly as the access rules demand.
+fn customers_only(user: &CurrentUser) -> Result<(), AppError> {
+    if user.role != Role::Customer {
+        return Err(AppError::Forbidden);
+    }
+    Ok(())
+}
+
 async fn telegram_page(
     state: web::Data<AppState>,
     user: CurrentUser,
 ) -> Result<HttpResponse, AppError> {
+    customers_only(&user)?;
     let enabled = state.telegram_bot.is_some();
 
     let chat_id: Option<i64> =
@@ -93,6 +110,7 @@ async fn telegram_unlink(
     otp_svc: web::Data<dyn ActionOtpService>,
     user: CurrentUser,
 ) -> Result<HttpResponse, AppError> {
+    customers_only(&user)?;
     let challenge = otp_svc
         .begin(user.id, "telegram.unlink", serde_json::json!({}))
         .await?;
@@ -123,6 +141,7 @@ async fn telegram_unlink_confirm(
     state: web::Data<AppState>,
     user: CurrentUser,
 ) -> Result<HttpResponse, AppError> {
+    customers_only(&user)?;
     otp_svc
         .verify(user.id, form.action_id, "telegram.unlink", &form.otp)
         .await?;
@@ -137,4 +156,141 @@ async fn telegram_unlink_confirm(
     Ok(HttpResponse::Found()
         .insert_header(("Location", "/settings/telegram"))
         .finish())
+}
+
+// ── Link-status poll (the guide page auto-refreshes on this) ─────────
+
+async fn telegram_status(
+    state: web::Data<AppState>,
+    user: CurrentUser,
+) -> Result<HttpResponse, AppError> {
+    customers_only(&user)?;
+    let linked: Option<bool> =
+        sqlx::query_scalar::<_, bool>(r#"SELECT telegram_chat_id IS NOT NULL FROM users WHERE id = $1"#)
+            .bind(user.id)
+            .fetch_optional(&state.db)
+            .await?;
+    Ok(HttpResponse::Ok().json(serde_json::json!({ "linked": linked.unwrap_or(false) })))
+}
+
+// ── Profile changes (OTP-gated): email & password ────────────────────
+
+#[derive(serde::Deserialize)]
+struct EmailForm {
+    new_email: String,
+}
+
+async fn email_change(
+    form: web::Form<EmailForm>,
+    otp_svc: web::Data<dyn ActionOtpService>,
+    user: CurrentUser,
+) -> Result<HttpResponse, AppError> {
+    customers_only(&user)?;
+    let new_email = form.new_email.trim().to_string();
+    if !new_email.contains('@') || new_email.len() < 5 {
+        return Err(AppError::BadRequest("that doesn't look like an email address".into()));
+    }
+    let challenge = otp_svc
+        .begin(user.id, "profile.email", serde_json::json!({ "email": new_email }))
+        .await?;
+    render_confirm(
+        &user,
+        "Confirm email change",
+        vec![("New email".into(), new_email)],
+        "/settings/email/confirm",
+        challenge,
+    )
+}
+
+async fn email_change_confirm(
+    form: web::Form<ActionConfirmForm>,
+    otp_svc: web::Data<dyn ActionOtpService>,
+    auth_svc: web::Data<dyn AuthService>,
+    user: CurrentUser,
+) -> Result<HttpResponse, AppError> {
+    customers_only(&user)?;
+    let payload = otp_svc
+        .verify(user.id, form.action_id, "profile.email", &form.otp)
+        .await?;
+    let email = payload["email"]
+        .as_str()
+        .ok_or_else(|| AppError::Internal(anyhow::anyhow!("bad profile.email payload")))?;
+    auth_svc.change_email(user.id, email).await?;
+    Ok(HttpResponse::Found()
+        .insert_header(("Location", "/settings/telegram"))
+        .finish())
+}
+
+#[derive(serde::Deserialize)]
+struct PasswordForm {
+    new_password: String,
+}
+
+async fn password_change(
+    form: web::Form<PasswordForm>,
+    otp_svc: web::Data<dyn ActionOtpService>,
+    user: CurrentUser,
+) -> Result<HttpResponse, AppError> {
+    customers_only(&user)?;
+    if form.new_password.len() < 8 {
+        return Err(AppError::BadRequest("password must be at least 8 characters".into()));
+    }
+    let challenge = otp_svc
+        .begin(
+            user.id,
+            "profile.password",
+            serde_json::json!({ "password": form.new_password }),
+        )
+        .await?;
+    render_confirm(
+        &user,
+        "Confirm password change",
+        vec![("Effect".into(), "your password will be replaced".into())],
+        "/settings/password/confirm",
+        challenge,
+    )
+}
+
+async fn password_change_confirm(
+    form: web::Form<ActionConfirmForm>,
+    otp_svc: web::Data<dyn ActionOtpService>,
+    auth_svc: web::Data<dyn AuthService>,
+    user: CurrentUser,
+) -> Result<HttpResponse, AppError> {
+    customers_only(&user)?;
+    let payload = otp_svc
+        .verify(user.id, form.action_id, "profile.password", &form.otp)
+        .await?;
+    let password = payload["password"]
+        .as_str()
+        .ok_or_else(|| AppError::Internal(anyhow::anyhow!("bad profile.password payload")))?;
+    auth_svc.change_password(user.id, password).await?;
+    Ok(HttpResponse::Found()
+        .insert_header(("Location", "/settings/telegram"))
+        .finish())
+}
+
+/// Shared renderer for the profile-change OTP pages.
+fn render_confirm(
+    user: &CurrentUser,
+    title: &str,
+    summary: Vec<(String, String)>,
+    action_url: &str,
+    challenge: crate::services::action_otp_service::ActionChallenge,
+) -> Result<HttpResponse, AppError> {
+    let body = OtpConfirmPage {
+        layout: LayoutCtx::from_user(Some(user)),
+        title: title.to_string(),
+        summary,
+        action_url: action_url.to_string(),
+        cancel_url: "/settings/telegram".to_string(),
+        action_id: challenge.action_id,
+        demo_otp: if challenge.delivered { None } else { Some(challenge.otp) },
+        error: None,
+    }
+    .render()
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("settings template: {e}")))?;
+    Ok(HttpResponse::Ok()
+        .content_type("text/html; charset=utf-8")
+        .body(body))
 }

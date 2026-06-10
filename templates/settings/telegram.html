@@ -7,8 +7,10 @@
   <span class="text-xs font-semibold uppercase tracking-wider text-amber-700">Settings · Security</span>
   <h1 class="text-3xl font-semibold text-stone-900 mt-1">One-time codes in Telegram</h1>
   <p class="mt-2 text-sm text-stone-600">
-    Link your Telegram account and every transfer confirmation code is sent to
-    your phone instead of being shown on screen — like a real bank's SMS OTP.
+    Link your Telegram account and every one-time code — for transfers, account
+    opening, loan applications, and profile changes — is sent to your phone.
+    You'll also receive <strong>updates about your account here</strong>:
+    account approvals, transfer outcomes, holds, and loan decisions.
   </p>
 
   {% if !enabled %}
@@ -21,17 +23,51 @@
     <div class="mt-6 p-5 rounded-lg border border-emerald-200 bg-emerald-50">
       <div class="text-sm font-semibold text-emerald-700">✓ Telegram linked</div>
       <p class="mt-1 text-sm text-stone-700">
-        Your one-time codes are delivered to your Telegram. Make a transfer to
-        see it in action.
+        One-time codes and account updates (approvals, transfers, holds, loan
+        decisions) now arrive in your Telegram.
       </p>
     </div>
+    <a href="/accounts"
+       class="mt-4 inline-block px-5 py-2.5 rounded-md bg-amber-700 text-white font-medium hover:bg-amber-800 transition">
+      Continue to my accounts →
+    </a>
     <form action="/settings/telegram/unlink" method="POST" class="mt-4">
       <button type="submit"
+              onclick="return confirm('Unlinking requires one last code sent to this Telegram. Continue?');"
               class="px-4 py-2 rounded-md border border-stone-300 text-sm text-stone-700 hover:border-red-300 hover:text-red-700 transition">
         Unlink Telegram
       </button>
-      <span class="ml-2 text-xs text-stone-500">Codes go back to appearing on screen.</span>
+      <span class="ml-2 text-xs text-stone-500">Requires OTP confirmation.</span>
     </form>
+
+    <!-- Profile changes (OTP-confirmed) -->
+    <section class="mt-10">
+      <h2 class="text-sm font-semibold uppercase tracking-wider text-stone-500 mb-3">Profile</h2>
+      <div class="rounded-lg border border-stone-200 bg-white divide-y divide-stone-100">
+        <form action="/settings/email" method="POST" class="p-4 flex items-end gap-3 flex-wrap">
+          <div class="flex-1 min-w-48">
+            <label for="new_email" class="block text-sm font-medium text-stone-700">Change email</label>
+            <input type="email" id="new_email" name="new_email" required placeholder="new@email.com"
+                   class="mt-1 w-full px-3 py-2 rounded-md border border-stone-300 bg-white text-sm">
+          </div>
+          <button type="submit" class="px-4 py-2 rounded-md border border-amber-300 text-amber-800 text-sm font-medium hover:bg-amber-50 transition">
+            Update (OTP)
+          </button>
+        </form>
+        <form action="/settings/password" method="POST" class="p-4 flex items-end gap-3 flex-wrap">
+          <div class="flex-1 min-w-48">
+            <label for="new_password" class="block text-sm font-medium text-stone-700">Change password</label>
+            <input type="password" id="new_password" name="new_password" required minlength="8"
+                   placeholder="at least 8 characters"
+                   class="mt-1 w-full px-3 py-2 rounded-md border border-stone-300 bg-white text-sm">
+          </div>
+          <button type="submit" class="px-4 py-2 rounded-md border border-amber-300 text-amber-800 text-sm font-medium hover:bg-amber-50 transition">
+            Update (OTP)
+          </button>
+        </form>
+      </div>
+      <p class="mt-2 text-xs text-stone-500">Both changes require a one-time code sent to your Telegram.</p>
+    </section>
   {% else %}
     <ol class="mt-6 space-y-4 text-sm text-stone-700 list-decimal list-inside">
       <li>
@@ -55,8 +91,21 @@
       </a>
       <p class="mt-3 text-xs text-stone-500">
         The link contains a single-use code tied to your FerroBank account.
-        Reload this page to generate a fresh one if it expires.
+        This page refreshes automatically the moment the bot confirms the link.
       </p>
+      <!-- Auto-refresh: poll the link status; reload the page when linked. -->
+      <script>
+        (function () {
+          var timer = setInterval(function () {
+            fetch('/settings/telegram/status', { credentials: 'same-origin' })
+              .then(function (r) { return r.json(); })
+              .then(function (s) {
+                if (s && s.linked) { clearInterval(timer); location.reload(); }
+              })
+              .catch(function () {});
+          }, 2000);
+        })();
+      </script>
     {% endif %}
   {% endif %}
 </section>

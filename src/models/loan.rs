@@ -35,6 +35,11 @@ pub struct Loan {
     pub interest_rate: Decimal,
     pub term_months: i32,
     pub status: LoanStatus,
+    /// Account credited with the principal once the loan is fully approved.
+    pub disbursement_account_id: Option<i64>,
+    /// When the next monthly repayment is due (set on approval, advanced on
+    /// every repayment). `None` until approved or once paid off.
+    pub next_payment_due: Option<chrono::DateTime<chrono::Utc>>,
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 

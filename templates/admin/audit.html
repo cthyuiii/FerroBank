@@ -12,12 +12,18 @@
 </div>
 
 {% if !entries.is_empty() %}
-<div class="mb-4">
+<div class="mb-4 flex flex-wrap gap-3">
   <input
     type="search"
     id="auditSearch"
     placeholder="Search by actor, event, or payload…"
     oninput="fbFilterTable('auditSearch', 'auditRows', 'auditEmpty')"
+    class="w-full sm:max-w-md px-3 py-2 rounded-md border border-stone-300 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-amber-700 focus:border-amber-700">
+  <input
+    type="search"
+    id="auditActor"
+    placeholder="Filter by user id (e.g. 3) — shows ALL of that user's actions"
+    oninput="fbAuditActorFilter()"
     class="w-full sm:max-w-md px-3 py-2 rounded-md border border-stone-300 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-amber-700 focus:border-amber-700">
 </div>
 {% endif %}
@@ -37,7 +43,8 @@
       </thead>
       <tbody id="auditRows" class="divide-y divide-stone-100 align-top">
         {% for entry in entries %}
-          <tr>
+          <tr data-actor="{% if let Some(id) = entry.actor_user_id %}{{ id }}{% else %}system{% endif %}"
+              {% if loop.index > 50 %}class="hidden fb-audit-overflow"{% endif %}>
             <td class="px-4 py-2 text-stone-500 whitespace-nowrap">{{ entry.created_at.format("%Y-%m-%d %H:%M:%S") }}</td>
             <td class="px-4 py-2 text-stone-600">
               {% if let Some(id) = entry.actor_user_id %}user #{{ id }}{% else %}system{% endif %}
@@ -51,6 +58,39 @@
       </tbody>
     </table>
     <div id="auditEmpty" class="hidden p-6 text-sm text-stone-500 text-center">No entries match your search.</div>
+    {% if entries.len() > 50 %}
+      <div class="p-4 border-t border-stone-100 text-center">
+        <button id="auditMore" type="button" onclick="fbAuditShowMore()"
+                class="px-4 py-2 rounded-md border border-stone-300 text-sm text-stone-700 hover:border-amber-700 hover:text-amber-700 transition">
+          Show more ({{ entries.len() - 50 }} hidden)
+        </button>
+      </div>
+    {% endif %}
   {% endif %}
 </div>
+
+<script>
+  // Reveal the table beyond the first 50 rows, 50 at a time.
+  function fbAuditShowMore() {
+    var hidden = document.querySelectorAll('.fb-audit-overflow.hidden');
+    for (var i = 0; i < Math.min(50, hidden.length); i++) hidden[i].classList.remove('hidden');
+    var left = document.querySelectorAll('.fb-audit-overflow.hidden').length;
+    var btn = document.getElementById('auditMore');
+    if (btn) {
+      if (left === 0) btn.parentElement.remove();
+      else btn.textContent = 'Show more (' + left + ' hidden)';
+    }
+  }
+  // Per-user view: type a user id to see every action that user performed.
+  function fbAuditActorFilter() {
+    var q = document.getElementById('auditActor').value.trim();
+    document.querySelectorAll('#auditRows tr').forEach(function (tr) {
+      var match = !q || tr.getAttribute('data-actor') === q;
+      tr.classList.toggle('hidden', !match);
+      if (match && q) tr.classList.remove('fb-audit-overflow');
+    });
+    var btn = document.getElementById('auditMore');
+    if (btn) btn.parentElement.style.display = q ? 'none' : '';
+  }
+</script>
 {% endblock %}

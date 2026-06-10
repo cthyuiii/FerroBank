@@ -1,12 +1,10 @@
 -- ─────────────────────────────────────────────────────────────────────────────
--- 005_loans.sql  ·  Loan applications, owned by Member 5.
+-- 005_loans.sql  ·  Loans module.
 --
--- Loan lifecycle:
---   pending  → submitted by a customer, awaiting staff review
---   approved → admin approved but no repayments yet (lump-sum disbursed)
---   active   → at least one repayment recorded, still outstanding
---   paid_off → outstanding balance reached zero
---   rejected → admin rejected the application
+-- Lifecycle: pending → (teller + admin approvals) → approved → active → paid_off
+--            pending → rejected (single staff rejection, or 7-day expiry)
+-- On full approval the principal is credited to the borrower's chosen
+-- disbursement account inside the same transaction.
 -- ─────────────────────────────────────────────────────────────────────────────
 
 CREATE TYPE loan_status AS ENUM (
@@ -17,10 +15,11 @@ CREATE TABLE loans (
     id              BIGSERIAL PRIMARY KEY,
     user_id         BIGINT          NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
     principal       NUMERIC(18, 2)  NOT NULL,
-    -- Annual interest rate as a decimal. 0.0525 = 5.25%.
-    interest_rate   NUMERIC(6, 4)   NOT NULL,
+    interest_rate   NUMERIC(6, 4)   NOT NULL,  -- annual, 0.0525 = 5.25%
     term_months     INTEGER         NOT NULL,
     status          loan_status     NOT NULL DEFAULT 'pending',
+    -- Where the principal lands when the loan is fully approved.
+    disbursement_account_id BIGINT  REFERENCES accounts(id) ON DELETE SET NULL,
     created_at      TIMESTAMPTZ     NOT NULL DEFAULT now(),
     decided_at      TIMESTAMPTZ,
 
@@ -32,14 +31,7 @@ CREATE TABLE loans (
 CREATE INDEX loans_user_id_idx      ON loans (user_id, created_at DESC);
 CREATE INDEX loans_status_idx       ON loans (status);
 
--- ─────────────────────────────────────────────────────────────────────────────
--- Dual approval ledger.
---
--- A loan only moves from 'pending' to 'approved' once it has collected BOTH a
--- 'teller' approval and an 'admin' approval. The UNIQUE(loan_id, role) constraint
--- allows at most one approval per role slot; since a user holds exactly one role,
--- filling both slots guarantees two distinct people signed off.
--- ─────────────────────────────────────────────────────────────────────────────
+-- Dual-approval ledger: a loan needs BOTH a 'teller' and an 'admin' row.
 CREATE TABLE loan_approvals (
     id                BIGSERIAL    PRIMARY KEY,
     loan_id           BIGINT       NOT NULL REFERENCES loans(id) ON DELETE CASCADE,

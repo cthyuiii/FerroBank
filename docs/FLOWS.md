@@ -1,13 +1,13 @@
 # FerroBank — System & Workflow Flow Diagrams
 
-Sequence/flow diagrams for every demonstrable scenario: the implemented core
-workflows first, then the **planned additional features** (marked *PLANNED*).
+Sequence/flow diagrams for every demonstrable scenario, core workflows first,
+then the security and verification features built on top of them.
 Render with any Mermaid viewer (GitHub, VS Code + Mermaid extension,
 <https://mermaid.live>) — handy for the report, slides, and the demo recording.
 
 Actors used throughout: **User** (person), **Browser**, **Actix** (middleware +
 handler), **Service** (business logic), **PostgreSQL**, plus **Telegram** for
-the OTP delivery channel.
+the OTP/notification delivery channel.
 
 ---
 
@@ -54,7 +54,7 @@ is server-side rendered; HTMX progressively enhances form posts.
 sequenceDiagram
     actor U as User
     participant B as Browser
-    participant A as Actix (auth handler)
+    participant A as Actix auth handler
     participant S as AuthService
     participant P as PostgreSQL
 
@@ -105,7 +105,7 @@ sequenceDiagram
 sequenceDiagram
     actor U as Customer
     participant B as Browser
-    participant A as Actix (transfers handler)
+    participant A as Actix transfers handler
     participant S as TransferService
     participant P as PostgreSQL
 
@@ -114,11 +114,12 @@ sequenceDiagram
     A->>A: parse Decimal · sender must OWN from-account
     A->>S: create(actor, from, to, amount)
     S->>P: recipient must belong to a DIFFERENT user<br/>(no self-transfers; DB trigger backs this up)
+    S->>P: apply matured limit changes · enforce per-transfer limit
     S->>S: Mutex rate-limit (≤5/min per account)
     S->>S: generate 6-digit OTP → argon2 hash
     S->>P: INSERT transfer status='pending' + otp_hash
     S->>P: audit_log: transfer.created
-    S-->>B: confirm page (recipient name + demo OTP)
+    S-->>B: confirm page (code goes to Telegram — never on screen when linked)
 
     U->>B: types OTP
     B->>A: POST /transfers/confirm
@@ -126,7 +127,7 @@ sequenceDiagram
     S->>P: BEGIN
     S->>P: SELECT transfer FOR UPDATE (must be 'pending')
     S->>P: actor must own the source account (else Forbidden)
-    S->>S: verify OTP against argon2 hash
+    S->>S: verify OTP against argon2 hash (3 strikes → rejected · 10-min TTL)
     S->>P: SELECT both accounts FOR UPDATE — ascending id (no deadlock)
     S->>S: re-check under lock: active? balance ≥ amount?
     alt all checks pass
@@ -144,9 +145,9 @@ sequenceDiagram
 
 ```mermaid
 sequenceDiagram
-    participant T1 as Transfer task 1 ($10)
-    participant T2 as Transfer task 2 ($10)
-    participant P as PostgreSQL (account balance: $15)
+    participant T1 as Transfer task 1 of 10 dollars
+    participant T2 as Transfer task 2 of 10 dollars
+    participant P as PostgreSQL with balance 15
 
     par simultaneous confirms
         T1->>P: SELECT … FOR UPDATE  (acquires row lock)
@@ -195,7 +196,7 @@ sequenceDiagram
 
 ```mermaid
 sequenceDiagram
-    participant OS as OS signal (Ctrl-C / SIGTERM)
+    participant OS as OS signal Ctrl-C or SIGTERM
     participant M as main.rs
     participant AX as Actix HttpServer
     participant P as PostgreSQL
@@ -211,103 +212,110 @@ sequenceDiagram
 
 ---
 
-# Planned additional features
+# Security & verification features
 
-## 7. OTP delivery via Telegram bot (IMPLEMENTED)
+## 7. OTP delivery via Telegram (mandatory for customers)
 
 ```mermaid
 sequenceDiagram
     actor U as Customer
     participant B as Browser
     participant A as Actix
-    participant S as TransferService
     participant TG as Telegram Bot API
     participant P as PostgreSQL
 
-    Note over U,P: One-time linking
-    U->>B: profile page → "Link Telegram" deep link<br/>https://t.me/FerroBankBot?start=&lt;one-time code&gt;
-    U->>TG: taps Start (sends /start &lt;code&gt;)
-    TG-->>A: getUpdates poll: /start &lt;code&gt; + chat_id
-    A->>P: match code → save chat_id (+ phone) on user
+    Note over U,P: After registration the customer signs in and is routed to /settings/telegram and nowhere else until linked
+    U->>B: tap "Open Telegram & link my account" (single-use code in deep link)
+    U->>TG: press Start → /start code
+    TG-->>A: getUpdates poll delivers code + chat id
+    A->>P: consume code, store chat id
+    Note over B: the guide page polls /settings/telegram/status every 2s and refreshes itself the moment the link lands
+    B-->>U: "Linked ✓ — codes & account updates arrive in Telegram"
 
-    Note over U,P: Every transfer afterwards
-    U->>A: POST /transfers/new
-    A->>S: create(…) → OTP generated, argon2-hashed in DB
-    S->>TG: POST /bot&lt;TOKEN&gt;/sendMessage {chat_id, "Your FerroBank code: 123456"}
-    TG-->>U: OTP arrives in the user's Telegram
-    U->>A: POST /transfers/confirm (types code from phone)
-    A->>S: confirm(…) — unchanged from flow 3
-    Note over S: Users without a linked chat_id fall back to<br/>the on-screen demo OTP (current behaviour)
+    Note over U,P: Every sensitive action afterwards (transfer, account opening, loan application, profile change) sends its code to Telegram — codes never appear on screen for linked users. Bot commands: /unlink (clears the link in the DB), /help.
 ```
 
-## 8. PLANNED — High-value transfer consent (> $5,000)
+## 8. Fraud hold + staff review (NRIC identity check)
+
+```mermaid
+sequenceDiagram
+    actor U as Customer
+    actor ST as Teller or Admin
+    participant S as TransferService
+    participant P as PostgreSQL
+
+    U->>S: confirm(...) on a transfer matching a fraud rule
+    Note over S: rules: ≥$10k large · $9k–10k structuring · drains >50% of a balance >$5k · 4+ transfers within 1 hour · (3 invalid OTP attempts rejects outright)
+    S->>P: status='on_hold' + reason — money NOT moved
+    S-->>U: review page: "this may be illegitimate" → submit purpose + NRIC
+    U->>S: submit_review(purpose, NRIC claim)
+    S->>P: INSERT transfer_reviews
+
+    ST->>S: GET /staff/review — queue shows claim vs NRIC on file
+    alt identity verified, purpose plausible
+        ST->>S: release → locked re-checks → money moves → 'completed'
+    else suspicious
+        ST->>S: deny(reason) → 'rejected'
+    end
+    S->>P: audit_log + notification (+ Telegram message) either way
+
+    Note over S,P: Hijack heuristic: 3+ overdraft attempts from one account in 24h freezes the account automatically.
+```
+
+## 9. Transfer limit change with hold window
 
 ```mermaid
 sequenceDiagram
     actor U as Customer
     participant B as Browser
-    participant A as Actix
-    participant S as TransferService
-    participant P as PostgreSQL
-
-    U->>B: submit transfer of $7,500
-    B->>A: POST /transfers/new
-    A->>S: create(…)
-    S->>S: amount > $5,000 → flag requires_consent
-    S-->>B: confirm page + consent modal:<br/>"High-value transfer — I understand and consent"
-    U->>B: ticks consent + enters OTP
-    B->>A: POST /transfers/confirm (otp, consent=true)
-    A->>S: confirm(…)
-    S->>P: verify consent recorded (consented_at) — refuse without it
-    S->>P: usual locked money move (flow 3)
-    S->>P: audit_log: transfer.high_value_consented {amount, actor}
-```
-
-## 9. PLANNED — Per-account transfer limit with 12-hour hold
-
-```mermaid
-sequenceDiagram
-    actor U as Customer
-    participant A as Actix
     participant S as AccountService
     participant P as PostgreSQL
 
-    U->>A: POST /accounts/{id}/limit (new limit $2,000 → $8,000)
-    A->>A: consent modal (same flow as high-value transfers)
-    A->>S: request_limit_change(account, new_limit)
-    S->>P: INSERT limit_changes {account, old, new,<br/>effective_at = now() + 12h, status='pending'}
-    S->>P: audit_log: account.limit_change_requested
-    Note over U,P: For 12 hours the OLD limit still applies —<br/>transfers above it are rejected with a clear reason.<br/>(Anti-fraud: a hijacked session can't instantly raise limits and drain.)
-
-    U->>A: any transfer after effective_at
-    A->>S: create(…)
-    S->>P: lazily apply matured limit change (status='applied')
-    S->>S: enforce: amount ≤ account.transfer_limit
+    U->>B: account page → request limit change
+    B->>U: consent popup: increases are risky → held before applying
+    U->>B: confirm
+    alt new limit ≤ current
+        S->>P: apply immediately (lowering reduces risk)
+    else increase
+        S->>P: INSERT limit_changes, effective_at = now() + hold window
+        Note over S,P: 12h default · Alice's accounts seeded to 10s for the demo. The OLD limit applies until maturity; the transfer engine promotes matured rows lazily before enforcing.
+    end
 ```
 
-## 10. PLANNED — Flagged-transfer hold + staff intervention
+## 10. Inactivity TTL + activity trail (every request)
 
 ```mermaid
 sequenceDiagram
-    actor U as Customer
-    actor ST as Teller/Admin
-    participant S as TransferService
+    participant B as Browser
+    participant G as ActivityGuard middleware
     participant P as PostgreSQL
 
-    U->>S: confirm(…) on a transfer matching a fraud rule<br/>(≥ $10k · $9k–10k structuring · 4+ in 24h velocity)
-    S->>P: instead of completing: status='on_hold' + reason<br/>(money NOT moved; nothing debited yet)
-    S->>P: audit_log: transfer.held {rule}
-    S-->>U: "Transfer held for review" page
-
-    ST->>S: GET /staff/review (held-transfer queue)
-    alt staff approves
-        ST->>S: POST /staff/transfers/{id}/release
-        S->>P: locked money move (flow 3) → status='completed'
-        S->>P: audit_log: transfer.released {reviewer}
-    else staff rejects
-        ST->>S: POST /staff/transfers/{id}/deny
-        S->>P: status='rejected' + reviewer's reason
-        S->>P: audit_log: transfer.denied {reviewer}
+    B->>G: any GET/POST/PUT/DELETE with a session
+    G->>G: log user id + method + path (traceable activity)
+    G->>P: last_activity_at older than 5 minutes? (database time)
+    alt expired
+        G->>G: purge session
+        G-->>B: 302 /login?expired=1 — "signed out for inactivity"
+    else active
+        G->>P: UPDATE last_activity_at = now()
+        G-->>B: request proceeds
     end
-    Note over ST,P: Every decision is attributable: the audit row records<br/>WHO released/denied WHAT and WHY — the compliance story.
+    Note over G,P: TTLs everywhere: sessions 5 min idle · OTPs 10 min · pending transfers 10 min · pending loans 7 days · notifications fire once.
+```
+
+## 11. Notifications (browser toasts + Telegram)
+
+```mermaid
+sequenceDiagram
+    participant SV as Any service
+    participant P as PostgreSQL
+    participant B as Browser (layout.html)
+    participant TG as Telegram
+
+    SV->>P: INSERT notifications (account approved, transfer completed/held/denied, loan approved/declined, account frozen)
+    SV->>TG: sendMessage when the user is linked
+    loop every 8 seconds
+        B->>P: GET /notifications (fetch-and-mark-seen)
+        B-->>B: toast popup per message — fires exactly once
+    end
 ```

@@ -162,9 +162,7 @@ where
             }
             Some(_) => {
                 let (req, _) = req.into_parts();
-                let resp = HttpResponse::Forbidden()
-                    .content_type("text/html; charset=utf-8")
-                    .body("<h1>403 Forbidden</h1><p>You don't have permission to view this page.</p>");
+                let resp = crate::errors::forbidden_page();
                 Box::pin(async move {
                     Ok(ServiceResponse::new(req, resp).map_into_right_body())
                 })
@@ -179,5 +177,129 @@ where
                 })
             }
         }
+    }
+}
+
+// ── Activity guard ───────────────────────────────────────────────────
+
+/// Global middleware wrapped around the whole app. Three jobs:
+///
+/// 1. **Activity trail** — logs every authenticated request (method, path,
+///    user id), so GET/POST/PUT/DELETE traffic is traceable per user.
+/// 2. **Inactivity TTL** — 5 minutes, measured against DATABASE time via
+///    `users.last_activity_at`, so it can't be bypassed by tampering with
+///    browser cookies. Expired sessions are purged and redirected to
+///    `/login?expired=1` on their next request, whatever it was.
+/// 3. **Mandatory Telegram link** — when Telegram OTP is configured,
+///    customers are routed to `/settings/telegram` and nowhere else until
+///    their account is linked (codes and account updates arrive there).
+pub struct ActivityGuard;
+
+impl<S, B> Transform<S, ServiceRequest> for ActivityGuard
+where
+    S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error> + 'static,
+    B: 'static,
+{
+    type Response = ServiceResponse<EitherBody<B>>;
+    type Error = Error;
+    type Transform = ActivityGuardMiddleware<S>;
+    type InitError = ();
+    type Future = Ready<Result<Self::Transform, Self::InitError>>;
+
+    fn new_transform(&self, service: S) -> Self::Future {
+        ready(Ok(ActivityGuardMiddleware {
+            service: std::rc::Rc::new(service),
+        }))
+    }
+}
+
+pub struct ActivityGuardMiddleware<S> {
+    service: std::rc::Rc<S>,
+}
+
+impl<S, B> Service<ServiceRequest> for ActivityGuardMiddleware<S>
+where
+    S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error> + 'static,
+    B: 'static,
+{
+    type Response = ServiceResponse<EitherBody<B>>;
+    type Error = Error;
+    type Future = LocalBoxFuture<'static, Result<Self::Response, Self::Error>>;
+
+    forward_ready!(service);
+
+    fn call(&self, req: ServiceRequest) -> Self::Future {
+        let service = std::rc::Rc::clone(&self.service);
+        Box::pin(async move {
+            let session = req.get_session();
+            let su = session.get::<SessionUser>(SESSION_KEY).ok().flatten();
+
+            if let Some(u) = su {
+                let method = req.method().to_string();
+                let path = req.path().to_string();
+                // (1) Per-user activity trail in the server log.
+                tracing::info!(user_id = u.id, %method, %path, "user activity");
+
+                if let Some(state) = req.app_data::<actix_web::web::Data<crate::state::AppState>>() {
+                    let db = state.db.clone();
+                    let telegram_enabled = state.telegram_bot.is_some();
+
+                    // (2) Inactivity TTL on database time.
+                    let expired: Option<(bool,)> = sqlx::query_as(
+                        r#"
+                        SELECT (last_activity_at IS NOT NULL
+                                AND last_activity_at < now() - interval '5 minutes')
+                        FROM users WHERE id = $1
+                        "#,
+                    )
+                    .bind(u.id)
+                    .fetch_optional(&db)
+                    .await
+                    .ok()
+                    .flatten();
+                    if matches!(expired, Some((true,))) {
+                        session.purge();
+                        let (req, _) = req.into_parts();
+                        let resp = HttpResponse::Found()
+                            .insert_header(("Location", "/login?expired=1"))
+                            .finish();
+                        return Ok(ServiceResponse::new(req, resp).map_into_right_body());
+                    }
+                    let _ = sqlx::query(
+                        r#"UPDATE users SET last_activity_at = now() WHERE id = $1"#,
+                    )
+                    .bind(u.id)
+                    .execute(&db)
+                    .await;
+
+                    // (3) Customers must finish Telegram linking first.
+                    if telegram_enabled && u.role == Role::Customer {
+                        let allowed = path.starts_with("/settings/telegram")
+                            || path == "/logout"
+                            || path == "/notifications";
+                        if !allowed {
+                            let linked: Option<(bool,)> = sqlx::query_as(
+                                r#"SELECT telegram_chat_id IS NOT NULL FROM users WHERE id = $1"#,
+                            )
+                            .bind(u.id)
+                            .fetch_optional(&db)
+                            .await
+                            .ok()
+                            .flatten();
+                            if !matches!(linked, Some((true,))) {
+                                let (req, _) = req.into_parts();
+                                let resp = HttpResponse::Found()
+                                    .insert_header(("Location", "/settings/telegram"))
+                                    .finish();
+                                return Ok(ServiceResponse::new(req, resp).map_into_right_body());
+                            }
+                        }
+                    }
+                }
+            }
+
+            let res = service.call(req).await?;
+            Ok(res.map_into_left_body())
+        })
     }
 }

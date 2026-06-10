@@ -21,6 +21,12 @@ pub trait OtpChannel: Send + Sync {
     /// user's linked Telegram; `false` means the caller should fall back to
     /// showing the code on screen (not linked, or delivery failed).
     async fn send_otp(&self, user_id: i64, otp: &str) -> bool;
+
+    /// Deliver a plain notification ("loan approved", "transfer held", …).
+    /// Default: not delivered (on-screen toasts still cover it).
+    async fn send_note(&self, _user_id: i64, _text: &str) -> bool {
+        false
+    }
 }
 
 /// Fallback impl: never delivers, so the confirm page shows the code on screen
@@ -99,6 +105,26 @@ impl OtpChannel for TelegramOtp {
                 false
             }
         }
+    }
+
+    async fn send_note(&self, user_id: i64, text: &str) -> bool {
+        let chat_id: Option<i64> =
+            sqlx::query_scalar::<_, Option<i64>>(r#"SELECT telegram_chat_id FROM users WHERE id = $1"#)
+                .bind(user_id)
+                .fetch_optional(&self.db)
+                .await
+                .ok()
+                .flatten()
+                .flatten();
+        let Some(chat_id) = chat_id else { return false };
+        self.http
+            .post(format!("{}/sendMessage", self.api_base))
+            .json(&json!({ "chat_id": chat_id, "text": text }))
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await
+            .map(|r| r.status().is_success())
+            .unwrap_or(false)
     }
 }
 

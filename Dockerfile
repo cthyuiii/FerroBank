@@ -36,7 +36,6 @@ WORKDIR /app
 COPY --from=builder /app/target/release/ferrobank /usr/local/bin/ferrobank
 COPY --from=builder /app/target/release/seed      /usr/local/bin/seed
 COPY --from=builder /app/migrations               ./migrations
-COPY static                                       ./static
 
 EXPOSE 8080
 ENV APP_HOST=0.0.0.0

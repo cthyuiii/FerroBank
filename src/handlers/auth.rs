@@ -17,6 +17,7 @@ use crate::errors::AppError;
 use crate::middleware::auth::{session, SessionUser};
 use crate::models::user::{NewUser, Role};
 use crate::services::auth_service::AuthService;
+use crate::state::AppState;
 use crate::view::LayoutCtx;
 
 pub fn routes(cfg: &mut web::ServiceConfig) {
@@ -39,7 +40,15 @@ pub fn routes(cfg: &mut web::ServiceConfig) {
 struct LoginTemplate {
     layout: LayoutCtx,
     error: Option<String>,
+    /// Informational banner (account created / signed out for inactivity).
+    notice: Option<String>,
     email: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct LoginQuery {
+    registered: Option<u8>,
+    expired: Option<u8>,
 }
 
 #[derive(Template)]
@@ -74,37 +83,42 @@ struct RegisterForm {
     middle_name: Option<String>,
     #[validate(length(min = 1, max = 40))]
     last_name: String,
+    /// National ID — used by staff to verify identity during fraud reviews.
+    #[validate(length(min = 5, max = 20, message = "must be 5-20 characters"))]
+    nric: String,
     #[validate(length(min = 8, max = 128, message = "must be at least 8 characters"))]
     password: String,
 }
 
 // ── Handlers ─────────────────────────────────────────────────────────
 
-async fn login_form() -> Result<HttpResponse, AppError> {
-    render_login(None, String::new())
+async fn login_form(query: web::Query<LoginQuery>) -> Result<HttpResponse, AppError> {
+    let notice = if query.registered.is_some() {
+        Some("Account created — please sign in with your new credentials.".to_string())
+    } else if query.expired.is_some() {
+        Some("You were signed out after 5 minutes of inactivity. Please sign in again.".to_string())
+    } else {
+        None
+    };
+    render_login(None, notice, String::new())
 }
 
 async fn login_submit(
     form: web::Form<LoginForm>,
     svc: web::Data<dyn AuthService>,
+    state: web::Data<AppState>,
     session: Session,
 ) -> Result<HttpResponse, AppError> {
     let form = form.into_inner();
 
     if let Err(e) = form.validate() {
-        return render_login(
-            Some(format!("Please correct: {e}")),
-            form.email,
-        );
+        return render_login(Some(format!("Please correct: {e}")), None, form.email);
     }
 
     let user = match svc.login(&form.email, &form.password).await {
         Ok(u) => u,
         Err(AppError::Unauthorized) => {
-            return render_login(
-                Some("Invalid email or password.".into()),
-                form.email,
-            );
+            return render_login(Some("Invalid email or password.".into()), None, form.email);
         }
         Err(other) => return Err(other),
     };
@@ -119,6 +133,19 @@ async fn login_submit(
         },
     )?;
 
+    // Customers who haven't linked Telegram yet are sent straight to the
+    // linking page (the ActivityGuard enforces this on every later request).
+    if user.role == Role::Customer && state.telegram_bot.is_some() {
+        let linked: Option<bool> =
+            sqlx::query_scalar::<_, bool>(r#"SELECT telegram_chat_id IS NOT NULL FROM users WHERE id = $1"#)
+                .bind(user.id)
+                .fetch_optional(&state.db)
+                .await?;
+        if !matches!(linked, Some(true)) {
+            return Ok(redirect("/settings/telegram"));
+        }
+    }
+
     Ok(redirect(post_login_destination(user.role)))
 }
 
@@ -129,7 +156,7 @@ async fn register_form() -> Result<HttpResponse, AppError> {
 async fn register_submit(
     form: web::Form<RegisterForm>,
     svc: web::Data<dyn AuthService>,
-    session: Session,
+    _session: Session,
 ) -> Result<HttpResponse, AppError> {
     let form = form.into_inner();
 
@@ -154,6 +181,7 @@ async fn register_submit(
                 .map(|m| m.trim().to_string())
                 .filter(|m| !m.is_empty()),
             last_name: form.last_name.trim().to_string(),
+            nric: Some(form.nric.trim().to_string()),
             role: Role::Customer, // all self-registrations are customers; staff are seeded
         })
         .await
@@ -171,18 +199,10 @@ async fn register_submit(
         Err(other) => return Err(other),
     };
 
-    // Auto-login after successful registration.
-    session::login(
-        &session,
-        SessionUser {
-            id: user.id,
-            email: user.email.clone(),
-            name: user.given_name(),
-            role: user.role,
-        },
-    )?;
-
-    Ok(redirect(post_login_destination(user.role)))
+    // No auto-login: the user must sign in with their new credentials —
+    // verifying the password they just set before any session exists.
+    tracing::info!(user_id = user.id, "registration complete; fresh sign-in required");
+    Ok(redirect("/login?registered=1"))
 }
 
 async fn logout(session: Session) -> impl Responder {
@@ -192,10 +212,15 @@ async fn logout(session: Session) -> impl Responder {
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
-fn render_login(error: Option<String>, email: String) -> Result<HttpResponse, AppError> {
+fn render_login(
+    error: Option<String>,
+    notice: Option<String>,
+    email: String,
+) -> Result<HttpResponse, AppError> {
     let body = LoginTemplate {
         layout: LayoutCtx::anonymous(),
         error,
+        notice,
         email,
     }
     .render()

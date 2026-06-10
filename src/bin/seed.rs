@@ -24,6 +24,7 @@ use ferrobank::{
     services::account_service::{AccountService, PgAccountService},
     services::auth_service::{AuthService, PgAuthService},
     services::loan_service::{LoanService, PgLoanService},
+    services::telegram_service::ScreenOtp,
 };
 
 // ── User seed plan ──────────────────────────────────────────────────
@@ -33,18 +34,20 @@ struct SeedUser {
     email: &'static str,
     password: &'static str,
     full_name: &'static str,
+    /// National ID — customers only (staff have none).
+    nric: Option<&'static str>,
     role: Role,
 }
 
 const SEED_USERS: &[SeedUser] = &[
-    SeedUser { key: "admin",   email: "admin@ferrobank.local",   password: "admin123",   full_name: "Admin User",       role: Role::Admin    },
-    SeedUser { key: "teller",  email: "teller@ferrobank.local",  password: "teller123",  full_name: "Teller User",      role: Role::Teller   },
-    SeedUser { key: "alice",   email: "alice@ferrobank.local",   password: "alice123",   full_name: "Alice Smith",      role: Role::Customer },
-    SeedUser { key: "bob",     email: "bob@ferrobank.local",     password: "bob123",     full_name: "Bob Johnson",      role: Role::Customer },
-    SeedUser { key: "charlie", email: "charlie@ferrobank.local", password: "charlie123", full_name: "Charlie Williams", role: Role::Customer },
-    SeedUser { key: "diana",   email: "diana@ferrobank.local",   password: "diana123",   full_name: "Diana Brown",      role: Role::Customer },
-    SeedUser { key: "eve",     email: "eve@ferrobank.local",     password: "eve123",     full_name: "Eve Davis",        role: Role::Customer },
-    SeedUser { key: "frank",   email: "frank@ferrobank.local",   password: "frank123",   full_name: "Frank Miller",     role: Role::Customer },
+    SeedUser { key: "admin",   email: "admin@ferrobank.local",   password: "admin123",   full_name: "Admin User",       nric: None,               role: Role::Admin    },
+    SeedUser { key: "teller",  email: "teller@ferrobank.local",  password: "teller123",  full_name: "Teller User",      nric: None,               role: Role::Teller   },
+    SeedUser { key: "alice",   email: "alice@ferrobank.local",   password: "alice123",   full_name: "Alice Smith",      nric: Some("S1234567A"),  role: Role::Customer },
+    SeedUser { key: "bob",     email: "bob@ferrobank.local",     password: "bob123",     full_name: "Bob Johnson",      nric: Some("S2345678B"),  role: Role::Customer },
+    SeedUser { key: "charlie", email: "charlie@ferrobank.local", password: "charlie123", full_name: "Charlie Williams", nric: Some("S3456789C"),  role: Role::Customer },
+    SeedUser { key: "diana",   email: "diana@ferrobank.local",   password: "diana123",   full_name: "Diana Brown",      nric: Some("S4567890D"),  role: Role::Customer },
+    SeedUser { key: "eve",     email: "eve@ferrobank.local",     password: "eve123",     full_name: "Eve Davis",        nric: Some("S5678901E"),  role: Role::Customer },
+    SeedUser { key: "frank",   email: "frank@ferrobank.local",   password: "frank123",   full_name: "Frank Miller",     nric: Some("S6789012F"),  role: Role::Customer },
 ];
 
 // ── Account seed plan ───────────────────────────────────────────────
@@ -95,7 +98,7 @@ async fn main() -> anyhow::Result<()> {
 
     let auth = PgAuthService::new(pool.clone());
     let accounts = PgAccountService::new(pool.clone());
-    let loans = PgLoanService::new(pool.clone());
+    let loans = PgLoanService::new(pool.clone(), std::sync::Arc::new(ScreenOtp));
 
     println!("── Users ─────────────────────────────────────");
     let user_ids = seed_users(&auth, &pool).await?;
@@ -104,7 +107,7 @@ async fn main() -> anyhow::Result<()> {
     let account_ids = seed_accounts(&accounts, &user_ids, &pool).await?;
 
     println!("\n── Loans ─────────────────────────────────────");
-    seed_loans(&loans, &user_ids).await?;
+    seed_loans(&loans, &user_ids, &account_ids).await?;
 
     println!("\n── Historical transfers ──────────────────────");
     seed_transfers(&account_ids, &pool).await?;
@@ -138,6 +141,7 @@ async fn seed_users(
             first_name: first,
             middle_name: None,
             last_name: last,
+            nric: u.nric.map(str::to_string),
             role: u.role,
         };
         match auth.register(new).await {
@@ -199,24 +203,41 @@ async fn seed_accounts(
 
         ids.insert(a.key, account_id);
     }
+
+    // Demo shortcut: Alice's limit-change hold window is 10 SECONDS instead of
+    // the production 12 hours, so the delayed-limit feature fits a recording.
+    sqlx::query(
+        r#"
+        UPDATE accounts SET limit_hold_seconds = 10
+        WHERE user_id = (SELECT id FROM users WHERE email = 'alice@ferrobank.local')
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    println!("  ✓ alice's accounts: limit-change hold set to 10s (demo)");
+
     Ok(ids)
 }
 
 async fn seed_loans(
     loans: &PgLoanService,
     user_ids: &HashMap<&'static str, i64>,
+    account_ids: &HashMap<&'static str, i64>,
 ) -> anyhow::Result<()> {
-    // (owner, principal, rate, term_months, approve?)
-    let plan: &[(&str, &str, &str, i32, bool)] = &[
-        ("alice",   "10000.00", "0.0525", 36, false),
-        ("bob",      "5000.00", "0.0700", 24, true ),  // approved
-        ("charlie",  "2500.00", "0.0650", 12, false),
+    // (owner, disbursement account, principal, rate, term_months, approve?)
+    let plan: &[(&str, &str, &str, &str, i32, bool)] = &[
+        ("alice",   "alice_checking",   "10000.00", "0.0525", 36, false),
+        ("bob",     "bob_checking",      "5000.00", "0.0700", 24, true ),  // approved
+        ("charlie", "charlie_checking",  "2500.00", "0.0650", 12, false),
     ];
 
-    for (owner, principal, rate, term, approve) in plan {
+    for (owner, account_key, principal, rate, term, approve) in plan {
         let p: Decimal = principal.parse()?;
         let r: Decimal = rate.parse()?;
-        match loans.apply(user_ids[*owner], p, r, *term).await {
+        match loans
+            .apply(user_ids[*owner], p, r, *term, account_ids[*account_key])
+            .await
+        {
             Ok(loan) => {
                 println!("  ✓ {} applied  id={} ${} @ {} ({} mo)", owner, loan.id, p, r, term);
                 if *approve {

@@ -31,7 +31,9 @@ pub fn routes(cfg: &mut web::ServiceConfig) {
             .route("", web::get().to(history))
             .route("/new", web::get().to(new_form))
             .route("/new", web::post().to(create))
-            .route("/confirm", web::post().to(confirm)),
+            .route("/confirm", web::post().to(confirm))
+            .route("/{id}/review", web::get().to(review_form))
+            .route("/{id}/review", web::post().to(review_submit)),
     );
 }
 
@@ -83,6 +85,7 @@ struct HistoryTemplate {
 /// never shows raw account/user ids — just the counterparty's name and the
 /// account that sent or received the money.
 struct HistoryRow {
+    id: i64,
     amount: rust_decimal::Decimal,
     status: TransferStatus,
     /// Rejection reason to show (specific reason, or a contact-admin default).
@@ -187,6 +190,7 @@ async fn history(
                 }
             });
             HistoryRow {
+                id: t.id,
                 amount: t.amount,
                 status: t.status,
                 reason,
@@ -355,11 +359,83 @@ async fn confirm(
     user: CurrentUser,
 ) -> Result<HttpResponse, AppError> {
     let form = form.into_inner();
-    svc.confirm(user.id, form.transfer_id, form.otp.trim()).await?;
+    let transfer = svc.confirm(user.id, form.transfer_id, form.otp.trim()).await?;
+
+    // Fraud rules may have parked it: send the user to the review form so
+    // they can state the purpose and prove their identity.
+    if transfer.status == TransferStatus::OnHold {
+        return Ok(HttpResponse::Found()
+            .insert_header(("Location", format!("/transfers/{}/review", transfer.id)))
+            .finish());
+    }
 
     Ok(HttpResponse::Found()
         .insert_header(("Location", "/transfers"))
         .finish())
+}
+
+// ── Held-transfer review (customer side) ─────────────────────────────
+
+#[derive(Template)]
+#[template(path = "transfers/review.html")]
+struct ReviewTemplate {
+    layout: LayoutCtx,
+    transfer: Transfer,
+    error: Option<String>,
+    submitted: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReviewForm {
+    purpose: String,
+    nric: String,
+}
+
+async fn review_form(
+    path: web::Path<i64>,
+    svc: web::Data<dyn TransferService>,
+    user: CurrentUser,
+) -> Result<HttpResponse, AppError> {
+    let transfer = svc.get_for_owner(user.id, path.into_inner()).await?;
+    render(ReviewTemplate {
+        layout: LayoutCtx::from_user(Some(&user)),
+        transfer,
+        error: None,
+        submitted: false,
+    })
+}
+
+async fn review_submit(
+    path: web::Path<i64>,
+    form: web::Form<ReviewForm>,
+    svc: web::Data<dyn TransferService>,
+    user: CurrentUser,
+) -> Result<HttpResponse, AppError> {
+    let transfer_id = path.into_inner();
+    match svc
+        .submit_review(user.id, transfer_id, &form.purpose, &form.nric)
+        .await
+    {
+        Ok(()) => {
+            let transfer = svc.get_for_owner(user.id, transfer_id).await?;
+            render(ReviewTemplate {
+                layout: LayoutCtx::from_user(Some(&user)),
+                transfer,
+                error: None,
+                submitted: true,
+            })
+        }
+        Err(AppError::BadRequest(msg)) | Err(AppError::Conflict(msg)) => {
+            let transfer = svc.get_for_owner(user.id, transfer_id).await?;
+            render(ReviewTemplate {
+                layout: LayoutCtx::from_user(Some(&user)),
+                transfer,
+                error: Some(msg),
+                submitted: false,
+            })
+        }
+        Err(other) => Err(other),
+    }
 }
 
 // ── Render helper ────────────────────────────────────────────────────

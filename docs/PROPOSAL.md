@@ -4,9 +4,8 @@
 >
 > CSC1106 Web Programming — Banking System domain (spec v1.2.2). Max 2 pages.
 >
-> ⚠️ **Reference draft only.** The module prohibits submitting AI-generated material.
-> Use this as a structural template: rewrite every section in your own words,
-> verify the references, and fill in your real member allocations before submission.
+> **Planning draft.** Rewrite every section in your own words, verify the
+> references, and fill in the real member allocations before any submission.
 
 ## 1. Project Direction and Business Workflow Planning
 

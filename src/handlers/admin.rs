@@ -21,7 +21,8 @@ use crate::services::admin_service::{
     AdminAccountRow, AdminService, AdminTransferRow, AdminUserRow, DashboardSnapshot,
 };
 use crate::services::audit_service::{AuditEntry, AuditService};
-use crate::services::transfer_service::TransferService;
+use crate::services::telegram_service::ScreenOtp;
+use crate::services::transfer_service::{HeldRow, PgTransferService, TransferService};
 use crate::state::AppState;
 use crate::view::LayoutCtx;
 
@@ -49,7 +50,10 @@ pub fn routes(cfg: &mut web::ServiceConfig) {
             .wrap(RequireRole(Role::Teller))
             .route("/accounts", web::get().to(accounts))
             .route("/accounts/{id}/approve", web::post().to(account_approve))
-            .route("/transfers", web::get().to(transfers)),
+            .route("/transfers", web::get().to(transfers))
+            .route("/review", web::get().to(review_queue))
+            .route("/transfers/{id}/release", web::post().to(review_release))
+            .route("/transfers/{id}/deny", web::post().to(review_deny)),
     );
 }
 
@@ -263,6 +267,8 @@ async fn account_adjust(
 struct TransfersTemplate {
     layout: LayoutCtx,
     transfers: Vec<AdminTransferRow>,
+    /// How many transfers are waiting in the fraud-review queue.
+    held_count: usize,
     /// Echoed back into the date inputs so the chosen range sticks.
     from_date: String,
     to_date: String,
@@ -279,6 +285,7 @@ struct TransferFilter {
 async fn transfers(
     query: web::Query<TransferFilter>,
     svc: web::Data<dyn AdminService>,
+    transfer_svc: web::Data<dyn TransferService>,
     user: CurrentUser,
 ) -> Result<HttpResponse, AppError> {
     // Parse the optional date bounds from the query string (HTML date inputs
@@ -292,10 +299,12 @@ async fn transfers(
     let to = parse(&query.to);
 
     let transfers = svc.all_transfers(from, to).await?;
+    let held_count = transfer_svc.list_held().await?.len();
     let is_admin = user.role == Role::Admin;
     render(TransfersTemplate {
         layout: LayoutCtx::from_user(Some(&user)),
         transfers,
+        held_count,
         from_date: query.from.clone().unwrap_or_default(),
         to_date: query.to.clone().unwrap_or_default(),
         is_admin,
@@ -373,10 +382,20 @@ async fn race_demo_run(
     form: web::Form<RaceForm>,
     svc: web::Data<dyn AdminService>,
     account_svc: web::Data<dyn AccountService>,
-    transfer_svc: web::Data<dyn TransferService>,
+    audit_svc: web::Data<dyn AuditService>,
+    state: web::Data<AppState>,
     user: CurrentUser,
 ) -> Result<HttpResponse, AppError> {
     let form = form.into_inner();
+
+    // A lab-local engine with the on-screen OTP channel: the demo must never
+    // spam a linked customer's Telegram with dozens of codes.
+    let transfer_svc: std::sync::Arc<dyn TransferService> =
+        std::sync::Arc::new(PgTransferService::new(
+            state.db.clone(),
+            audit_svc.clone().into_inner(),
+            std::sync::Arc::new(ScreenOtp),
+        ));
 
     let fail = |accounts, msg: String, user: &CurrentUser| {
         render(RaceDemoTemplate {
@@ -417,13 +436,16 @@ async fn race_demo_run(
         let svc = transfer_svc.clone();
         let (from_id, to_id) = (form.from_account_id, form.to_account_id);
         handles.push(actix_web::rt::spawn(async move {
+            // Ok(None) = completed; Ok(Some(reason)) = parked on hold.
             let outcome = async {
                 let created = svc
                     .create(owner_id, from_id, to_id, amount, Some(format!("race demo #{i}")))
                     .await?;
-                svc.confirm(owner_id, created.transfer.id, &created.otp)
-                    .await
-                    .map(|_| ())
+                let t = svc.confirm(owner_id, created.transfer.id, &created.otp).await?;
+                Ok::<Option<String>, AppError>(match t.status {
+                    crate::models::transfer::TransferStatus::Completed => None,
+                    _ => Some(t.status_reason.unwrap_or_else(|| "held for review".into())),
+                })
             }
             .await;
             (i, outcome, t0.elapsed().as_millis())
@@ -437,9 +459,13 @@ async fn race_demo_run(
             .await
             .map_err(|e| AppError::Internal(anyhow::anyhow!("demo task panicked: {e}")))?;
         let (ok, detail) = match outcome {
-            Ok(()) => {
+            Ok(None) => {
                 completed += 1;
                 (true, format!("debited ${amount} under row lock"))
+            }
+            Ok(Some(hold_reason)) => {
+                rejected += 1;
+                (false, format!("HELD for review: {hold_reason}"))
             }
             Err(AppError::Conflict(msg)) | Err(AppError::BadRequest(msg)) => {
                 rejected += 1;
@@ -470,6 +496,56 @@ async fn race_demo_run(
             rows,
         }),
     })
+}
+
+// ── Held-transfer review queue (staff side) ─────────────────────────
+
+#[derive(Template)]
+#[template(path = "admin/review.html")]
+struct ReviewQueueTemplate {
+    layout: LayoutCtx,
+    rows: Vec<HeldRow>,
+}
+
+async fn review_queue(
+    transfer_svc: web::Data<dyn TransferService>,
+    user: CurrentUser,
+) -> Result<HttpResponse, AppError> {
+    let rows = transfer_svc.list_held().await?;
+    render(ReviewQueueTemplate {
+        layout: LayoutCtx::from_user(Some(&user)),
+        rows,
+    })
+}
+
+async fn review_release(
+    path: web::Path<i64>,
+    transfer_svc: web::Data<dyn TransferService>,
+    user: CurrentUser,
+) -> Result<HttpResponse, AppError> {
+    transfer_svc.release(user.id, path.into_inner()).await?;
+    Ok(redirect("/staff/review"))
+}
+
+#[derive(Debug, Deserialize)]
+struct DenyForm {
+    reason: Option<String>,
+}
+
+async fn review_deny(
+    path: web::Path<i64>,
+    form: web::Form<DenyForm>,
+    transfer_svc: web::Data<dyn TransferService>,
+    user: CurrentUser,
+) -> Result<HttpResponse, AppError> {
+    let reason = form
+        .reason
+        .clone()
+        .map(|r| r.trim().to_string())
+        .filter(|r| !r.is_empty())
+        .unwrap_or_else(|| "denied after staff review".to_string());
+    transfer_svc.deny(user.id, path.into_inner(), &reason).await?;
+    Ok(redirect("/staff/review"))
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
