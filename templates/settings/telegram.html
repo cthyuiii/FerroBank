@@ -1,0 +1,63 @@
+{% extends "layout.html" %}
+
+{% block title %}Telegram codes · FerroBank{% endblock %}
+
+{% block content %}
+<section class="max-w-lg mx-auto py-10">
+  <span class="text-xs font-semibold uppercase tracking-wider text-amber-700">Settings · Security</span>
+  <h1 class="text-3xl font-semibold text-stone-900 mt-1">One-time codes in Telegram</h1>
+  <p class="mt-2 text-sm text-stone-600">
+    Link your Telegram account and every transfer confirmation code is sent to
+    your phone instead of being shown on screen — like a real bank's SMS OTP.
+  </p>
+
+  {% if !enabled %}
+    <div class="mt-6 p-4 rounded-lg border border-stone-200 bg-stone-100 text-sm text-stone-600">
+      Telegram delivery isn't configured on this server (no
+      <code class="text-xs">TELEGRAM_BOT_TOKEN</code>). Codes will continue to
+      appear on screen during transfers.
+    </div>
+  {% else if linked %}
+    <div class="mt-6 p-5 rounded-lg border border-emerald-200 bg-emerald-50">
+      <div class="text-sm font-semibold text-emerald-700">✓ Telegram linked</div>
+      <p class="mt-1 text-sm text-stone-700">
+        Your one-time codes are delivered to your Telegram. Make a transfer to
+        see it in action.
+      </p>
+    </div>
+    <form action="/settings/telegram/unlink" method="POST" class="mt-4">
+      <button type="submit"
+              class="px-4 py-2 rounded-md border border-stone-300 text-sm text-stone-700 hover:border-red-300 hover:text-red-700 transition">
+        Unlink Telegram
+      </button>
+      <span class="ml-2 text-xs text-stone-500">Codes go back to appearing on screen.</span>
+    </form>
+  {% else %}
+    <ol class="mt-6 space-y-4 text-sm text-stone-700 list-decimal list-inside">
+      <li>
+        Install <a href="https://telegram.org/apps" target="_blank" rel="noopener"
+        class="text-amber-700 hover:underline">Telegram</a> on your phone or desktop
+        and sign in with your phone number.
+      </li>
+      <li>
+        Tap the button below — it opens our bot in Telegram with a single-use
+        link code already filled in.
+      </li>
+      <li>Press <strong>Start</strong> in the chat. The bot replies “Linked!”.</li>
+      <li>Come back here and refresh — this page will show the link as active.</li>
+    </ol>
+
+    {% if let Some(url) = link_url %}
+      <a href="{{ url }}" target="_blank" rel="noopener"
+         class="mt-6 inline-flex items-center gap-2 px-5 py-3 rounded-md bg-amber-700 text-white font-medium hover:bg-amber-800 transition">
+        <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg>
+        Open Telegram &amp; link my account
+      </a>
+      <p class="mt-3 text-xs text-stone-500">
+        The link contains a single-use code tied to your FerroBank account.
+        Reload this page to generate a fresh one if it expires.
+      </p>
+    {% endif %}
+  {% endif %}
+</section>
+{% endblock %}

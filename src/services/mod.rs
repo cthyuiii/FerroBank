@@ -5,8 +5,10 @@
 //! the OOP / polymorphism story.
 
 pub mod account_service;
+pub mod action_otp_service;
 pub mod admin_service;
 pub mod audit_service;
 pub mod auth_service;
 pub mod loan_service;
+pub mod telegram_service;
 pub mod transfer_service;

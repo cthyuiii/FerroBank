@@ -3,7 +3,7 @@
 **Iron-clad core banking, built in Rust.**
 
 A server-side-rendered enterprise banking platform built for **CSC1106 Web Programming** at SIT
-(spec v1.2 — Banking System domain).
+(spec v1.2.2 — Banking System domain).
 Demonstrates layered architecture, OOP via traits, ACID money movement with both database-level
 and application-level concurrency control, role-based access control, fraud detection, and audit logging.
 
@@ -35,9 +35,9 @@ See **[ARCHITECTURE.md](./ARCHITECTURE.md)** for how the pieces fit and **[TEAM_
 
 | Module | Owner | Description |
 |---|---|---|
-| Auth | M2 | Registration, login, argon2 password hashing, cookie sessions, roles (customer/teller/admin) |
+| Auth | M2 | Registration (first/middle/last name), login, argon2 password hashing, cookie sessions, roles (customer/teller/admin), personalized greeting |
 | Accounts | M3 | Open/close/freeze accounts, balances, savings & checking, **teller-approved opening** (pending → active), admin balance adjustments |
-| Transfers | M4 | ACID money movement, **Mutex rate-limit + row-lock concurrency + explicit rollback**, OTP confirm, rejection reasons, fraud rules, audit log |
+| Transfers | M4 | ACID money movement, **Mutex rate-limit + row-lock concurrency + explicit rollback**, OTP confirm (Telegram or on-screen), no self-transfers (service + DB trigger), rejection reasons, fraud rules, audit log, **generalized OTP guard** for account opening / loan applications / profile changes |
 | Loans | M5 | Applications, simple-interest model, **dual approval (teller + admin)**, repayments that debit a funding account |
 | Admin & Staff | M1 (Platform Lead) | Admin dashboard with fraud signals, searchable audit log, all-accounts CRUD; staff (teller) area for account approval and transfer review |
 
@@ -57,19 +57,21 @@ See **[TEAM_CHARTER.md](./TEAM_CHARTER.md)** for each member's group baseline an
 
 ## Running FerroBank
 
-There are two supported ways to run the project. Both serve the app at
+There are three supported ways to run the project. All serve the app at
 <http://localhost:8080>.
 
-- **Docker (recommended)** — one command builds and starts Postgres, the app,
-  and the demo data. No Rust toolchain required.
-- **Local (`cargo`)** — run the app directly with Cargo against a Postgres
-  container. Best for active Rust development and fast rebuilds.
+- **Fully local (no Docker)** — run the app with Cargo against a natively
+  installed PostgreSQL. Works anywhere; nothing in the app depends on Docker.
+- **Docker** — one command builds and starts Postgres, the app, and the demo
+  data. No Rust toolchain required.
+- **Local (`cargo`) + Docker Postgres** — run the app natively against a
+  Postgres container. Best for active Rust development and fast rebuilds.
 
 ### Prerequisites
 
 | Tool | Docker run | Local run |
 |---|---|---|
-| Docker Desktop | required | required (for Postgres) |
+| Docker Desktop | required | required (for Postgres) — or none with a native Postgres (Option A) |
 | Rust toolchain (rustup) | not needed | required |
 | SQLx CLI | not needed | optional (only to author new migrations) |
 
@@ -93,7 +95,45 @@ winget install Rustlang.Rustup       # Rust (local run only)
 
 ---
 
-### Option A — Docker (full stack)
+### Option A — Fully local (no Docker)
+
+Nothing in the app depends on Docker — it just connects to whatever
+`DATABASE_URL` points at and applies its own migrations on startup. So if
+Docker isn't an option, install PostgreSQL natively and create the role +
+database the `.env` expects:
+
+```bash
+# macOS (Homebrew)
+brew install postgresql@16
+brew services start postgresql@16
+
+createuser ferrobank --createdb
+createdb ferrobank --owner=ferrobank
+psql -d ferrobank -c "ALTER USER ferrobank WITH PASSWORD 'ferrobank';"
+```
+
+```powershell
+# Windows — install from https://www.postgresql.org/download/windows/
+# then in the bundled "SQL Shell (psql)" as the postgres superuser:
+CREATE ROLE ferrobank WITH LOGIN PASSWORD 'ferrobank' CREATEDB;
+CREATE DATABASE ferrobank OWNER ferrobank;
+```
+
+The default `DATABASE_URL` in `.env.example`
+(`postgres://ferrobank:ferrobank@localhost:5432/ferrobank`) already matches, so
+the remaining steps are just:
+
+```bash
+cp .env.example .env          # then paste in a SESSION_SECRET (openssl rand -base64 64)
+cargo run --bin seed && cargo run
+```
+
+To wipe and reseed from scratch: `dropdb ferrobank && createdb ferrobank --owner=ferrobank`,
+then run the seed again.
+
+---
+
+### Option B — Docker (full stack)
 
 ```bash
 cp .env.example .env          # optional, but recommended: set your own SESSION_SECRET
@@ -124,7 +164,7 @@ explicitly with `docker compose run --rm seed`.
 
 ---
 
-### Option B — Local (`cargo`)
+### Option C — Local (`cargo`)
 
 Postgres still runs in Docker; only the app runs natively.
 
@@ -189,6 +229,38 @@ it is safe — existing rows are skipped.
 
 *These dev seeds exist so teammates can log in without registering on every fresh
 database. Remove them (or rotate the passwords) before any real deployment.*
+
+---
+
+## Telegram OTP (extended feature)
+
+With `TELEGRAM_BOT_TOKEN` set in `.env`, transfer one-time codes are delivered
+to the user's Telegram instead of being shown on screen — a realistic
+out-of-band verification channel.
+
+Setup (once per deployment):
+
+1. In Telegram, message **@BotFather** → `/newbot` → choose a name and username.
+2. Paste the token it returns into `.env` as `TELEGRAM_BOT_TOKEN=...`.
+3. Restart the app. The log line `telegram OTP delivery enabled` confirms it.
+
+Each user then links their own account: **Settings → One-time codes in
+Telegram** (`/settings/telegram`) shows a guide and a deep link that opens the
+bot with a single-use code; pressing **Start** completes the link. Users who
+haven't linked (or if the token is unset) automatically fall back to the
+on-screen demo code, so the app always works.
+
+The bot also accepts commands (registered in its menu): `/unlink` removes the
+link straight from the chat (updates the database immediately; codes go back
+on screen), and `/help` lists the commands. One-time codes gate **every**
+sensitive action, not just transfers: account opening, loan applications, and
+profile changes (e.g. unlinking Telegram from the website) all go through the
+shared `action_otps` confirmation flow.
+
+See `docs/FLOWS.md` §7 for the sequence diagram and
+`src/services/telegram_service.rs` for the `OtpChannel` trait
+(`TelegramOtp` / `ScreenOtp` — runtime polymorphism, same pattern as the
+other services).
 
 ---
 

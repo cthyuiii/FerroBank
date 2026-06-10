@@ -14,18 +14,30 @@
   {% endif %}
 
   <form action="/register" method="POST" class="mt-6 space-y-4">
+    <div class="grid grid-cols-2 gap-3">
+      <div>
+        <label for="first_name" class="block text-sm font-medium text-stone-700">First name</label>
+        <input
+          type="text" id="first_name" name="first_name" value="{{ first_name }}"
+          required autocomplete="given-name" autofocus maxlength="40"
+          class="mt-1 w-full px-3 py-2 rounded-md border border-stone-300 bg-white focus:outline-none focus:ring-2 focus:ring-amber-700 focus:border-amber-700">
+      </div>
+      <div>
+        <label for="last_name" class="block text-sm font-medium text-stone-700">Last name</label>
+        <input
+          type="text" id="last_name" name="last_name" value="{{ last_name }}"
+          required autocomplete="family-name" maxlength="40"
+          class="mt-1 w-full px-3 py-2 rounded-md border border-stone-300 bg-white focus:outline-none focus:ring-2 focus:ring-amber-700 focus:border-amber-700">
+      </div>
+    </div>
+
     <div>
-      <label for="full_name" class="block text-sm font-medium text-stone-700">Full name</label>
+      <label for="middle_name" class="block text-sm font-medium text-stone-700">
+        Middle name <span class="text-stone-400 font-normal">(optional)</span>
+      </label>
       <input
-        type="text"
-        id="full_name"
-        name="full_name"
-        value="{{ full_name }}"
-        required
-        autocomplete="name"
-        autofocus
-        minlength="2"
-        maxlength="80"
+        type="text" id="middle_name" name="middle_name" value="{{ middle_name }}"
+        autocomplete="additional-name" maxlength="40"
         class="mt-1 w-full px-3 py-2 rounded-md border border-stone-300 bg-white focus:outline-none focus:ring-2 focus:ring-amber-700 focus:border-amber-700">
     </div>
 

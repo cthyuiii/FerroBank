@@ -2,9 +2,40 @@
 
 {% block title %}FerroBank · Iron-clad core banking{% endblock %}
 
+{% block extra_head %}
+<style>
+  /* ── Animated hero background ───────────────────────────────────── */
+  .fb-blobs { position: absolute; inset: 0; overflow: visible; pointer-events: none; }
+  .fb-blob {
+    position: absolute; border-radius: 9999px; filter: blur(70px); opacity: .45;
+    animation: fb-drift 18s ease-in-out infinite alternate;
+  }
+  .fb-blob-a { width: 420px; height: 420px; background: #fcd34d; top: -120px; right: -60px; }
+  .fb-blob-b { width: 340px; height: 340px; background: #fdba74; bottom: -160px; left: -80px;
+               animation-duration: 24s; animation-delay: -7s; }
+  .fb-blob-c { width: 240px; height: 240px; background: #fda4af; top: 35%; left: 55%;
+               animation-duration: 30s; animation-delay: -14s; opacity: .3; }
+  @keyframes fb-drift {
+    from { transform: translate(0, 0) scale(1); }
+    to   { transform: translate(60px, -40px) scale(1.18); }
+  }
+  html.dark .fb-blob { opacity: .14; }
+  html.dark .fb-blob-c { opacity: .10; }
+  @media (prefers-reduced-motion: reduce) { .fb-blob { animation: none; } }
+</style>
+{% endblock %}
+
 {% block content %}
-<section class="py-10 sm:py-16">
-  <div class="max-w-3xl">
+<section class="relative py-10 sm:py-16">
+  <div class="fb-blobs" aria-hidden="true">
+    <div class="fb-blob fb-blob-a"></div>
+    <div class="fb-blob fb-blob-b"></div>
+    <div class="fb-blob fb-blob-c"></div>
+  </div>
+  <div class="max-w-3xl relative">
+    {% if let Some(u) = layout.user %}
+      <p class="text-lg text-stone-600 mb-2">Hello, <span class="font-semibold text-amber-700">{{ u.name }}</span> 👋</p>
+    {% endif %}
     <span class="inline-block text-xs font-semibold uppercase tracking-wider text-amber-700 mb-3">FerroBank</span>
     <h1 class="text-4xl sm:text-5xl font-semibold tracking-tight text-stone-900 leading-tight">
       Iron-clad core banking,<br>
@@ -70,7 +101,7 @@
       <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 3l7 4v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V7l7-4z"/></svg>
       <h3 class="font-semibold text-stone-900">Secure by design</h3>
     </div>
-    <p class="mt-2 text-sm text-stone-600 leading-relaxed">Strong password hashing, encrypted sessions, and role-based access on every page.</p>
+    <p class="mt-2 text-sm text-stone-600 leading-relaxed">Strong password hashing, encrypted sessions, role-based access — and a one-time code (on screen or via Telegram) required for every transfer, account opening, loan application, and profile change.</p>
   </div>
   <div class="p-6 rounded-lg bg-stone-100 border border-stone-200">
     <div class="flex items-center gap-2 text-amber-700">

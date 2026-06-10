@@ -33,6 +33,7 @@ services:
       APP_PORT: "8080"
       # Generate your own with: openssl rand -base64 64
       SESSION_SECRET: ${SESSION_SECRET:-please-set-SESSION_SECRET-in-your-shell-or-an-env-file-of-at-least-64-bytes-thanks}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       RUST_LOG: ferrobank=info,actix_web=info,sqlx=warn
     ports:
       - "8080:8080"

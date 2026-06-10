@@ -55,16 +55,20 @@ impl AuthService for PgAuthService {
     async fn register(&self, new_user: NewUser) -> Result<User, AppError> {
         let password_hash = Self::hash_password(&new_user.password)?;
 
+        let full_name = new_user.full_name();
         let user = sqlx::query_as::<_, User>(
             r#"
-            INSERT INTO users (email, password_hash, full_name, role)
-            VALUES ($1, $2, $3, $4)
-            RETURNING id, email, password_hash, full_name, role, created_at
+            INSERT INTO users (email, password_hash, full_name, first_name, middle_name, last_name, role)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            RETURNING id, email, password_hash, full_name, first_name, middle_name, last_name, role, created_at
             "#,
         )
         .bind(&new_user.email)
         .bind(&password_hash)
-        .bind(&new_user.full_name)
+        .bind(&full_name)
+        .bind(new_user.first_name.trim())
+        .bind(new_user.middle_name.as_deref().map(str::trim).filter(|m| !m.is_empty()))
+        .bind(new_user.last_name.trim())
         .bind(new_user.role)
         .fetch_one(&self.db)
         .await
@@ -83,7 +87,7 @@ impl AuthService for PgAuthService {
         // Same error for "user not found" and "wrong password" — never leak which one.
         let user = sqlx::query_as::<_, User>(
             r#"
-            SELECT id, email, password_hash, full_name, role, created_at
+            SELECT id, email, password_hash, full_name, first_name, middle_name, last_name, role, created_at
             FROM users
             WHERE email = $1
             "#,
@@ -102,7 +106,7 @@ impl AuthService for PgAuthService {
     async fn find_by_id(&self, id: i64) -> Result<User, AppError> {
         sqlx::query_as::<_, User>(
             r#"
-            SELECT id, email, password_hash, full_name, role, created_at
+            SELECT id, email, password_hash, full_name, first_name, middle_name, last_name, role, created_at
             FROM users
             WHERE id = $1
             "#,

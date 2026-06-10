@@ -1,0 +1,67 @@
+{% extends "layout.html" %}
+
+{% block title %}{{ title }} · FerroBank{% endblock %}
+
+{% block content %}
+<section class="max-w-lg mx-auto py-10">
+  <span class="text-xs font-semibold uppercase tracking-wider text-amber-700">Security check</span>
+  <h1 class="text-3xl font-semibold text-stone-900 mt-1">{{ title }}</h1>
+  <p class="mt-2 text-sm text-stone-600">
+    Nothing has been changed yet. FerroBank requires a one-time code for all
+    sensitive actions — enter the 6-digit code to continue.
+  </p>
+
+  {% if let Some(msg) = error %}
+    <div class="mt-4 p-3 rounded-md bg-red-50 border border-red-200 text-sm text-red-800">{{ msg }}</div>
+  {% endif %}
+
+  {% if !summary.is_empty() %}
+    <div class="mt-6 p-5 rounded-lg border border-stone-200 bg-white space-y-3">
+      {% for item in summary %}
+        <div class="flex items-center justify-between">
+          <span class="text-sm text-stone-500">{{ item.0 }}</span>
+          <span class="font-mono text-stone-900">{{ item.1 }}</span>
+        </div>
+      {% endfor %}
+    </div>
+  {% endif %}
+
+  {% if let Some(code) = demo_otp %}
+    <div class="mt-4 p-4 rounded-lg border border-amber-300 bg-amber-50">
+      <div class="text-xs font-semibold uppercase tracking-wider text-amber-800">Demo only</div>
+      <div class="mt-1 text-sm text-stone-700">
+        Your one-time code is
+        <span class="inline-block font-mono text-lg font-bold tracking-widest text-amber-900 px-2 py-0.5 rounded bg-white border border-amber-300 mx-1">{{ code }}</span>
+        <a href="/settings/telegram" class="text-amber-800 underline hover:text-amber-900">Link Telegram</a>
+        to receive codes on your phone instead.
+      </div>
+    </div>
+  {% else %}
+    <div class="mt-4 p-4 rounded-lg border border-blue-200 bg-blue-50">
+      <div class="text-xs font-semibold uppercase tracking-wider text-blue-700">Check Telegram</div>
+      <div class="mt-1 text-sm text-stone-700">
+        We sent your 6-digit code to your linked Telegram account.
+      </div>
+    </div>
+  {% endif %}
+
+  <form action="{{ action_url }}" method="POST" class="mt-6 space-y-4">
+    <input type="hidden" name="action_id" value="{{ action_id }}">
+    <div>
+      <label for="otp" class="block text-sm font-medium text-stone-700">One-time code</label>
+      <input
+        type="text" id="otp" name="otp" required autofocus
+        autocomplete="one-time-code" inputmode="numeric" pattern="\d{6}" maxlength="6"
+        placeholder="6 digits"
+        class="mt-1 w-full px-3 py-3 rounded-md border border-stone-300 bg-white font-mono text-center text-2xl tracking-[0.5em] focus:outline-none focus:ring-2 focus:ring-amber-700 focus:border-amber-700">
+    </div>
+    <div class="flex items-center gap-3 pt-2">
+      <button type="submit"
+              class="px-5 py-2.5 rounded-md bg-amber-700 text-white font-medium hover:bg-amber-800 transition">
+        Confirm
+      </button>
+      <a href="{{ cancel_url }}" class="text-sm text-stone-600 hover:text-amber-700">Cancel</a>
+    </div>
+  </form>
+</section>
+{% endblock %}

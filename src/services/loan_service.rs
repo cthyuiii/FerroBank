@@ -458,3 +458,32 @@ impl LoanService for PgLoanService {
         Ok(total.round_dp(2))
     }
 }
+
+// ── Unit tests ───────────────────────────────────────────────────────
+// Pure-math tests: no database needed, run with plain `cargo test`.
+
+#[cfg(test)]
+mod tests {
+    use super::total_due;
+    use rust_decimal::Decimal;
+
+    #[test]
+    fn simple_interest_full_year() {
+        // $10,000 at 5% for 12 months → $10,500 total due.
+        let due = total_due(Decimal::from(10_000), Decimal::new(5, 2), 12);
+        assert_eq!(due, Decimal::from(10_500));
+    }
+
+    #[test]
+    fn simple_interest_half_year() {
+        // $10,000 at 5% for 6 months → $10,250 (interest scales by months/12).
+        let due = total_due(Decimal::from(10_000), Decimal::new(5, 2), 6);
+        assert_eq!(due, Decimal::from(10_250));
+    }
+
+    #[test]
+    fn zero_rate_owes_principal_only() {
+        let due = total_due(Decimal::from(1_234), Decimal::ZERO, 24);
+        assert_eq!(due, Decimal::from(1_234));
+    }
+}

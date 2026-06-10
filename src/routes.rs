@@ -13,5 +13,6 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
     handlers::accounts::routes(cfg);
     handlers::transfers::routes(cfg);
     handlers::loans::routes(cfg);
+    handlers::settings::routes(cfg);
     handlers::admin::routes(cfg);
 }

@@ -67,8 +67,9 @@ struct ConfirmTemplate {
     /// sender can verify who they're paying before confirming.
     to_account_number: String,
     to_owner_name: String,
-    /// Demo only. Real system would send this by SMS.
-    demo_otp: String,
+    /// `Some(code)` → show on screen (demo fallback);
+    /// `None` → the code went to the user's linked Telegram.
+    demo_otp: Option<String>,
 }
 
 #[derive(Template)]
@@ -340,7 +341,11 @@ async fn create(
         transfer: created.transfer,
         to_account_number: to_account_number.to_string(),
         to_owner_name,
-        demo_otp: created.otp,
+        demo_otp: if created.otp_delivered {
+            None
+        } else {
+            Some(created.otp)
+        },
     })
 }
 

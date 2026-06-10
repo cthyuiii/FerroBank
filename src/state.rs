@@ -10,4 +10,7 @@ use std::sync::Arc;
 pub struct AppState {
     pub db: PgPool,
     pub config: Arc<Config>,
+    /// Telegram bot username (from `getMe`), used to build t.me deep links.
+    /// `None` when Telegram OTP delivery isn't configured.
+    pub telegram_bot: Option<String>,
 }

@@ -19,8 +19,9 @@ use crate::models::account::{Account, AccountStatus, AccountType};
 use crate::models::loan::LoanStatus;
 use crate::models::user::Role;
 use crate::services::account_service::AccountService;
+use crate::services::action_otp_service::ActionOtpService;
 use crate::services::loan_service::LoanService;
-use crate::view::LayoutCtx;
+use crate::view::{LayoutCtx, OtpConfirmPage};
 
 pub fn routes(cfg: &mut web::ServiceConfig) {
     cfg.service(
@@ -28,6 +29,7 @@ pub fn routes(cfg: &mut web::ServiceConfig) {
             .route("", web::get().to(list))
             .route("/new", web::get().to(new_form))
             .route("/new", web::post().to(create))
+            .route("/new/confirm", web::post().to(create_confirm))
             .route("/{id}", web::get().to(detail))
             .route("/{id}/freeze", web::post().to(freeze))
             .route("/{id}/close", web::post().to(close)),
@@ -75,6 +77,13 @@ struct NewAccountForm {
     kind: String, // "savings" | "checking"
 }
 
+/// Generic OTP confirmation payload (shared shape with loans/settings).
+#[derive(Debug, Deserialize)]
+struct ActionConfirmForm {
+    action_id: i64,
+    otp: String,
+}
+
 // ── Handlers ─────────────────────────────────────────────────────────
 
 async fn list(
@@ -119,7 +128,7 @@ async fn new_form(user: CurrentUser) -> Result<HttpResponse, AppError> {
 
 async fn create(
     form: web::Form<NewAccountForm>,
-    svc: web::Data<dyn AccountService>,
+    otp_svc: web::Data<dyn ActionOtpService>,
     user: CurrentUser,
 ) -> Result<HttpResponse, AppError> {
     let kind = match form.kind.as_str() {
@@ -131,6 +140,50 @@ async fn create(
                 error: Some("Please choose Savings or Checking.".into()),
             });
         }
+    };
+
+    // Opening an account is a sensitive action → OTP gate. Nothing is created
+    // until the code verifies; the request is parked in action_otps.
+    let challenge = otp_svc
+        .begin(user.id, "account.open", serde_json::json!({ "kind": form.kind }))
+        .await?;
+
+    render(OtpConfirmPage {
+        layout: LayoutCtx::from_user(Some(&user)),
+        title: "Confirm new account".into(),
+        summary: vec![("Account type".into(), kind.label().to_string())],
+        action_url: "/accounts/new/confirm".into(),
+        cancel_url: "/accounts".into(),
+        action_id: challenge.action_id,
+        demo_otp: if challenge.delivered { None } else { Some(challenge.otp) },
+        error: None,
+    })
+}
+
+async fn create_confirm(
+    form: web::Form<ActionConfirmForm>,
+    svc: web::Data<dyn AccountService>,
+    otp_svc: web::Data<dyn ActionOtpService>,
+    user: CurrentUser,
+) -> Result<HttpResponse, AppError> {
+    let payload = match otp_svc
+        .verify(user.id, form.action_id, "account.open", &form.otp)
+        .await
+    {
+        Ok(p) => p,
+        Err(AppError::BadRequest(msg)) | Err(AppError::Conflict(msg)) => {
+            return render(NewTemplate {
+                layout: LayoutCtx::from_user(Some(&user)),
+                error: Some(format!("{msg} — please start again.")),
+            });
+        }
+        Err(other) => return Err(other),
+    };
+
+    let kind = match payload["kind"].as_str() {
+        Some("savings") => AccountType::Savings,
+        Some("checking") => AccountType::Checking,
+        _ => return Err(AppError::Internal(anyhow::anyhow!("bad account.open payload"))),
     };
 
     // Customer self-opens are created pending — a teller/admin must approve.

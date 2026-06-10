@@ -48,7 +48,9 @@ struct RegisterTemplate {
     layout: LayoutCtx,
     error: Option<String>,
     email: String,
-    full_name: String,
+    first_name: String,
+    middle_name: String,
+    last_name: String,
 }
 
 // ── Form payloads ────────────────────────────────────────────────────
@@ -65,8 +67,13 @@ struct LoginForm {
 struct RegisterForm {
     #[validate(email)]
     email: String,
-    #[validate(length(min = 2, max = 80))]
-    full_name: String,
+    #[validate(length(min = 1, max = 40))]
+    first_name: String,
+    /// Optional middle name.
+    #[validate(length(max = 40))]
+    middle_name: Option<String>,
+    #[validate(length(min = 1, max = 40))]
+    last_name: String,
     #[validate(length(min = 8, max = 128, message = "must be at least 8 characters"))]
     password: String,
 }
@@ -107,6 +114,7 @@ async fn login_submit(
         SessionUser {
             id: user.id,
             email: user.email.clone(),
+            name: user.given_name(),
             role: user.role,
         },
     )?;
@@ -115,7 +123,7 @@ async fn login_submit(
 }
 
 async fn register_form() -> Result<HttpResponse, AppError> {
-    render_register(None, String::new(), String::new())
+    render_register(None, String::new(), String::new(), String::new(), String::new())
 }
 
 async fn register_submit(
@@ -129,7 +137,9 @@ async fn register_submit(
         return render_register(
             Some(format!("Please correct: {e}")),
             form.email,
-            form.full_name,
+            form.first_name,
+            form.middle_name.unwrap_or_default(),
+            form.last_name,
         );
     }
 
@@ -137,14 +147,26 @@ async fn register_submit(
         .register(NewUser {
             email: form.email.clone(),
             password: form.password.clone(),
-            full_name: form.full_name.clone(),
+            first_name: form.first_name.trim().to_string(),
+            middle_name: form
+                .middle_name
+                .clone()
+                .map(|m| m.trim().to_string())
+                .filter(|m| !m.is_empty()),
+            last_name: form.last_name.trim().to_string(),
             role: Role::Customer, // all self-registrations are customers; staff are seeded
         })
         .await
     {
         Ok(u) => u,
         Err(AppError::Conflict(msg)) => {
-            return render_register(Some(msg), form.email, form.full_name);
+            return render_register(
+                Some(msg),
+                form.email,
+                form.first_name,
+                form.middle_name.unwrap_or_default(),
+                form.last_name,
+            );
         }
         Err(other) => return Err(other),
     };
@@ -155,6 +177,7 @@ async fn register_submit(
         SessionUser {
             id: user.id,
             email: user.email.clone(),
+            name: user.given_name(),
             role: user.role,
         },
     )?;
@@ -186,13 +209,17 @@ fn render_login(error: Option<String>, email: String) -> Result<HttpResponse, Ap
 fn render_register(
     error: Option<String>,
     email: String,
-    full_name: String,
+    first_name: String,
+    middle_name: String,
+    last_name: String,
 ) -> Result<HttpResponse, AppError> {
     let body = RegisterTemplate {
         layout: LayoutCtx::anonymous(),
         error,
         email,
-        full_name,
+        first_name,
+        middle_name,
+        last_name,
     }
     .render()
     .map_err(|e| AppError::Internal(anyhow::anyhow!("register template: {e}")))?;

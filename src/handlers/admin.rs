@@ -21,6 +21,7 @@ use crate::services::admin_service::{
     AdminAccountRow, AdminService, AdminTransferRow, AdminUserRow, DashboardSnapshot,
 };
 use crate::services::audit_service::{AuditEntry, AuditService};
+use crate::services::transfer_service::TransferService;
 use crate::state::AppState;
 use crate::view::LayoutCtx;
 
@@ -36,7 +37,9 @@ pub fn routes(cfg: &mut web::ServiceConfig) {
             .route("/accounts/{id}/freeze", web::post().to(account_freeze))
             .route("/accounts/{id}/unfreeze", web::post().to(account_unfreeze))
             .route("/accounts/{id}/close", web::post().to(account_close))
-            .route("/accounts/{id}/adjust", web::post().to(account_adjust)),
+            .route("/accounts/{id}/adjust", web::post().to(account_adjust))
+            .route("/race-demo", web::get().to(race_demo_form))
+            .route("/race-demo", web::post().to(race_demo_run)),
     );
 
     // Staff area — tellers AND admins (RequireRole(Teller) treats admin as a
@@ -296,6 +299,176 @@ async fn transfers(
         from_date: query.from.clone().unwrap_or_default(),
         to_date: query.to.clone().unwrap_or_default(),
         is_admin,
+    })
+}
+
+// ── Race condition demo ──────────────────────────────────────────────
+//
+// Visual, recordable proof of the concurrency-safe transfer engine: fires N
+// transfers at the same instant through the REAL production code path
+// (create → OTP → confirm) and renders the outcome of every task plus the
+// money-conservation invariants. The browser-friendly twin of
+// tests/transfer_concurrency.rs.
+
+#[derive(Template)]
+#[template(path = "admin/race_demo.html")]
+struct RaceDemoTemplate {
+    layout: LayoutCtx,
+    /// Active accounts to pick from (joined to owners).
+    accounts: Vec<AdminAccountRow>,
+    error: Option<String>,
+    results: Option<RaceResults>,
+}
+
+struct RaceResults {
+    start_from: Decimal,
+    end_from: Decimal,
+    completed: usize,
+    rejected: usize,
+    /// start_from + start_to == end_from + end_to, to the cent.
+    conserved: bool,
+    rows: Vec<RaceRow>,
+}
+
+struct RaceRow {
+    task: usize,
+    ok: bool,
+    detail: String,
+    ms: u128,
+}
+
+#[derive(Debug, Deserialize)]
+struct RaceForm {
+    from_account_id: i64,
+    to_account_id: i64,
+    amount: String,
+    tasks: usize,
+}
+
+/// Only active accounts make sense as demo participants.
+async fn race_demo_accounts(
+    svc: &web::Data<dyn AdminService>,
+) -> Result<Vec<AdminAccountRow>, AppError> {
+    Ok(svc
+        .all_accounts()
+        .await?
+        .into_iter()
+        .filter(|a| a.status == crate::models::account::AccountStatus::Active)
+        .collect())
+}
+
+async fn race_demo_form(
+    svc: web::Data<dyn AdminService>,
+    user: CurrentUser,
+) -> Result<HttpResponse, AppError> {
+    render(RaceDemoTemplate {
+        layout: LayoutCtx::from_user(Some(&user)),
+        accounts: race_demo_accounts(&svc).await?,
+        error: None,
+        results: None,
+    })
+}
+
+async fn race_demo_run(
+    form: web::Form<RaceForm>,
+    svc: web::Data<dyn AdminService>,
+    account_svc: web::Data<dyn AccountService>,
+    transfer_svc: web::Data<dyn TransferService>,
+    user: CurrentUser,
+) -> Result<HttpResponse, AppError> {
+    let form = form.into_inner();
+
+    let fail = |accounts, msg: String, user: &CurrentUser| {
+        render(RaceDemoTemplate {
+            layout: LayoutCtx::from_user(Some(user)),
+            accounts,
+            error: Some(msg),
+            results: None,
+        })
+    };
+
+    let amount = match Decimal::from_str(form.amount.trim()) {
+        Ok(d) if d > Decimal::ZERO => d,
+        _ => {
+            let accounts = race_demo_accounts(&svc).await?;
+            return fail(accounts, "Amount must be a positive number like 10.00.".into(), &user);
+        }
+    };
+    if !(1..=10).contains(&form.tasks) || form.from_account_id == form.to_account_id {
+        let accounts = race_demo_accounts(&svc).await?;
+        return fail(
+            accounts,
+            "Use 1–10 tasks and two different accounts.".into(),
+            &user,
+        );
+    }
+
+    // The engine's ownership check requires the source account's owner as the
+    // acting user, so the demo impersonates them — fine for an admin-only lab.
+    let from = account_svc.get_by_id(form.from_account_id).await?;
+    let owner_id = from.user_id;
+    let start_from = from.balance;
+    let start_to = account_svc.get_balance(form.to_account_id).await?;
+
+    // Fire all tasks at the same instant.
+    let t0 = std::time::Instant::now();
+    let mut handles = Vec::new();
+    for i in 1..=form.tasks {
+        let svc = transfer_svc.clone();
+        let (from_id, to_id) = (form.from_account_id, form.to_account_id);
+        handles.push(actix_web::rt::spawn(async move {
+            let outcome = async {
+                let created = svc
+                    .create(owner_id, from_id, to_id, amount, Some(format!("race demo #{i}")))
+                    .await?;
+                svc.confirm(owner_id, created.transfer.id, &created.otp)
+                    .await
+                    .map(|_| ())
+            }
+            .await;
+            (i, outcome, t0.elapsed().as_millis())
+        }));
+    }
+
+    let mut rows = Vec::new();
+    let (mut completed, mut rejected) = (0usize, 0usize);
+    for h in handles {
+        let (task, outcome, ms) = h
+            .await
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("demo task panicked: {e}")))?;
+        let (ok, detail) = match outcome {
+            Ok(()) => {
+                completed += 1;
+                (true, format!("debited ${amount} under row lock"))
+            }
+            Err(AppError::Conflict(msg)) | Err(AppError::BadRequest(msg)) => {
+                rejected += 1;
+                (false, msg)
+            }
+            Err(other) => return Err(other),
+        };
+        rows.push(RaceRow { task, ok, detail, ms });
+    }
+    rows.sort_by_key(|r| r.ms);
+
+    let end_from = account_svc.get_balance(form.from_account_id).await?;
+    let end_to = account_svc.get_balance(form.to_account_id).await?;
+    let conserved = start_from + start_to == end_from + end_to
+        && end_from == start_from - amount * Decimal::from(completed as i64)
+        && end_from >= Decimal::ZERO;
+
+    render(RaceDemoTemplate {
+        layout: LayoutCtx::from_user(Some(&user)),
+        accounts: race_demo_accounts(&svc).await?,
+        error: None,
+        results: Some(RaceResults {
+            start_from,
+            end_from,
+            completed,
+            rejected,
+            conserved,
+            rows,
+        }),
     })
 }
 

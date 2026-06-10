@@ -31,9 +31,28 @@ pub struct User {
     pub id: i64,
     pub email: String,
     pub password_hash: String,
+    /// Denormalized display name ("First [Middle] Last").
     pub full_name: String,
+    /// Structured name parts. Nullable for rows created before migration 008.
+    pub first_name: Option<String>,
+    pub middle_name: Option<String>,
+    pub last_name: Option<String>,
     pub role: Role,
     pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl User {
+    /// The name to greet the user with: first name, falling back to the first
+    /// word of `full_name` for legacy rows.
+    pub fn given_name(&self) -> String {
+        self.first_name.clone().unwrap_or_else(|| {
+            self.full_name
+                .split_whitespace()
+                .next()
+                .unwrap_or("there")
+                .to_string()
+        })
+    }
 }
 
 /// Input shape for `AuthService::register`.
@@ -41,6 +60,20 @@ pub struct User {
 pub struct NewUser {
     pub email: String,
     pub password: String,
-    pub full_name: String,
+    pub first_name: String,
+    pub middle_name: Option<String>,
+    pub last_name: String,
     pub role: Role,
+}
+
+impl NewUser {
+    /// Display name assembled from the structured parts.
+    pub fn full_name(&self) -> String {
+        match self.middle_name.as_deref().map(str::trim) {
+            Some(m) if !m.is_empty() => {
+                format!("{} {} {}", self.first_name.trim(), m, self.last_name.trim())
+            }
+            _ => format!("{} {}", self.first_name.trim(), self.last_name.trim()),
+        }
+    }
 }

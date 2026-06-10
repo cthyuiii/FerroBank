@@ -1,0 +1,126 @@
+{% extends "layout.html" %}
+
+{% block title %}Race demo · FerroBank{% endblock %}
+
+{% block content %}
+<section class="max-w-3xl mx-auto py-10">
+  <span class="text-xs font-semibold uppercase tracking-wider text-amber-700">Admin · Concurrency lab</span>
+  <h1 class="text-3xl font-semibold text-stone-900 mt-1">Race condition demo</h1>
+  <p class="mt-2 text-sm text-stone-600 max-w-2xl">
+    Fires N transfers <strong>at the same instant</strong> against one source
+    account, exercising the full production engine: Mutex rate-limiter, OTP,
+    and <code class="text-xs">SELECT … FOR UPDATE</code> row locks. Pick
+    amount × tasks larger than the source balance to force contention — the
+    locks serialize the balance checks, so the account can never be overdrawn.
+  </p>
+
+  <!-- Setup form -->
+  <form action="/admin/race-demo" method="POST"
+        class="mt-6 p-5 rounded-lg border border-stone-200 bg-white grid gap-4 sm:grid-cols-2">
+    <div>
+      <label class="block text-sm font-medium text-stone-700">From account (will be debited)</label>
+      <select name="from_account_id" required
+              class="mt-1 w-full px-3 py-2 rounded-md border border-stone-300 bg-white">
+        {% for a in accounts %}
+          <option value="{{ a.id }}">#{{ a.account_number }} · {{ a.owner_name }} · ${{ a.balance }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-stone-700">To account</label>
+      <select name="to_account_id" required
+              class="mt-1 w-full px-3 py-2 rounded-md border border-stone-300 bg-white">
+        {% for a in accounts %}
+          <option value="{{ a.id }}">#{{ a.account_number }} · {{ a.owner_name }} · ${{ a.balance }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-stone-700">Amount per transfer</label>
+      <input type="text" name="amount" value="10.00" required
+             class="mt-1 w-full px-3 py-2 rounded-md border border-stone-300 bg-white font-mono">
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-stone-700">Concurrent tasks (1–10)</label>
+      <input type="number" name="tasks" value="5" min="1" max="10" required
+             class="mt-1 w-full px-3 py-2 rounded-md border border-stone-300 bg-white font-mono">
+      <p class="mt-1 text-xs text-stone-500">More than 5 also demos the per-minute Mutex rate limit.</p>
+    </div>
+    <div class="sm:col-span-2">
+      <button type="submit"
+              class="px-5 py-2.5 rounded-md bg-amber-700 text-white font-medium hover:bg-amber-800 transition">
+        Fire concurrent transfers
+      </button>
+      {% if error.is_some() %}
+        <span class="ml-3 text-sm text-red-700">{{ error.as_ref().unwrap() }}</span>
+      {% endif %}
+    </div>
+  </form>
+
+  {% if let Some(r) = results %}
+    <!-- Invariant summary -->
+    <div class="mt-8 grid gap-4 sm:grid-cols-3">
+      <div class="p-4 rounded-lg border border-stone-200 bg-white">
+        <div class="text-xs uppercase tracking-wider text-stone-500">Source balance</div>
+        <div class="mt-1 font-mono text-lg text-stone-900">${{ r.start_from }} → ${{ r.end_from }}</div>
+        <div class="mt-1 text-xs text-stone-500">never negative</div>
+      </div>
+      <div class="p-4 rounded-lg border border-stone-200 bg-white">
+        <div class="text-xs uppercase tracking-wider text-stone-500">Outcomes</div>
+        <div class="mt-1 font-mono text-lg text-stone-900">{{ r.completed }} completed · {{ r.rejected }} rejected</div>
+        <div class="mt-1 text-xs text-stone-500">losers rejected, not lost</div>
+      </div>
+      {% if r.conserved %}
+        <div class="p-4 rounded-lg border border-emerald-200 bg-emerald-50">
+          <div class="text-xs uppercase tracking-wider text-emerald-700">Money conserved</div>
+          <div class="mt-1 font-mono text-lg text-emerald-700">✓ no loss, no duplication</div>
+          <div class="mt-1 text-xs text-stone-500">debits = credits, to the cent</div>
+        </div>
+      {% else %}
+        <div class="p-4 rounded-lg border border-red-300 bg-red-50">
+          <div class="text-xs uppercase tracking-wider text-red-700">Money NOT conserved</div>
+          <div class="mt-1 font-mono text-lg text-red-700">✗ invariant broken!</div>
+        </div>
+      {% endif %}
+    </div>
+
+    <!-- Per-task outcomes -->
+    <div class="mt-6 rounded-lg border border-stone-200 bg-white overflow-hidden">
+      <table class="w-full text-sm">
+        <thead class="bg-stone-100 text-left text-xs uppercase tracking-wider text-stone-500">
+          <tr>
+            <th class="px-4 py-2">Task</th>
+            <th class="px-4 py-2">Outcome</th>
+            <th class="px-4 py-2">Detail</th>
+            <th class="px-4 py-2 text-right">Finished after</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-stone-100">
+          {% for row in r.rows %}
+            <tr>
+              <td class="px-4 py-2 font-mono">#{{ row.task }}</td>
+              <td class="px-4 py-2">
+                {% if row.ok %}
+                  <span class="text-xs px-2 py-0.5 rounded-full border bg-emerald-50 text-emerald-700 border-emerald-200">Completed</span>
+                {% else %}
+                  <span class="text-xs px-2 py-0.5 rounded-full border bg-red-50 text-red-700 border-red-200">Rejected</span>
+                {% endif %}
+              </td>
+              <td class="px-4 py-2 text-stone-600">{{ row.detail }}</td>
+              <td class="px-4 py-2 text-right font-mono text-stone-500">{{ row.ms }} ms</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <p class="mt-4 text-xs text-stone-500">
+      Each task ran the real two-step flow (create → OTP → confirm) on its own
+      database connection. Row locks forced the confirms into a queue — the
+      timing column shows them finishing one after another, never interleaved.
+      Verify in the <a href="/admin/audit" class="text-amber-700 hover:underline">audit log</a>
+      or in psql: <code class="text-[11px]">SELECT id, amount, status, status_reason FROM transfers ORDER BY id DESC LIMIT {{ r.rows.len() }};</code>
+    </p>
+  {% endif %}
+</section>
+{% endblock %}

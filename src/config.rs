@@ -11,6 +11,8 @@ pub struct Config {
     pub app_host: String,
     pub app_port: u16,
     pub session_secret: String,
+    /// Telegram bot token for OTP delivery. `None` → codes show on screen.
+    pub telegram_bot_token: Option<String>,
 }
 
 impl Config {
@@ -42,11 +44,16 @@ impl Config {
             );
         }
 
+        let telegram_bot_token = std::env::var("TELEGRAM_BOT_TOKEN")
+            .ok()
+            .filter(|t| !t.trim().is_empty());
+
         Ok(Self {
             database_url,
             app_host,
             app_port,
             session_secret,
+            telegram_bot_token,
         })
     }
 }

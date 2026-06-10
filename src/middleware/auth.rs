@@ -32,6 +32,8 @@ const SESSION_KEY: &str = "user";
 pub struct SessionUser {
     pub id: i64,
     pub email: String,
+    /// Given name, for greetings ("Hello, Alice").
+    pub name: String,
     pub role: Role,
 }
 
@@ -48,6 +50,8 @@ pub struct SessionUser {
 pub struct CurrentUser {
     pub id: i64,
     pub email: String,
+    /// Given name, for greetings.
+    pub name: String,
     pub role: Role,
 }
 
@@ -61,6 +65,7 @@ impl FromRequest for CurrentUser {
             Ok(Some(u)) => Ok(CurrentUser {
                 id: u.id,
                 email: u.email,
+                name: u.name,
                 role: u.role,
             }),
             _ => Err(AppError::Unauthorized),

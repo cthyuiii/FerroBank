@@ -21,8 +21,9 @@ use crate::models::account::{Account, AccountStatus};
 use crate::models::loan::{Loan, LoanStatus, Repayment};
 use crate::models::user::Role;
 use crate::services::account_service::AccountService;
+use crate::services::action_otp_service::ActionOtpService;
 use crate::services::loan_service::LoanService;
-use crate::view::LayoutCtx;
+use crate::view::{LayoutCtx, OtpConfirmPage};
 
 pub fn routes(cfg: &mut web::ServiceConfig) {
     cfg.service(
@@ -30,6 +31,7 @@ pub fn routes(cfg: &mut web::ServiceConfig) {
             .route("", web::get().to(list))
             .route("/apply", web::get().to(apply_form))
             .route("/apply", web::post().to(apply_submit))
+            .route("/apply/confirm", web::post().to(apply_confirm))
             .route("/{id}", web::get().to(detail))
             .route("/{id}/repay", web::post().to(repay))
             .route("/{id}/approve", web::post().to(approve))
@@ -96,6 +98,13 @@ struct RepayForm {
     account_id: i64,
 }
 
+/// Generic OTP confirmation payload (same shape as accounts/settings).
+#[derive(Debug, Deserialize)]
+struct ActionConfirmForm {
+    action_id: i64,
+    otp: String,
+}
+
 // ── Handlers ─────────────────────────────────────────────────────────
 
 async fn list(
@@ -117,6 +126,11 @@ async fn list(
 }
 
 async fn apply_form(user: CurrentUser) -> Result<HttpResponse, AppError> {
+    // Only customers borrow — staff can't own accounts, so a staff loan could
+    // never be repaid (repayments debit a funding account).
+    if user.role != Role::Customer {
+        return Err(AppError::Forbidden);
+    }
     render(ApplyTemplate {
         layout: LayoutCtx::from_user(Some(&user)),
         error: None,
@@ -128,9 +142,13 @@ async fn apply_form(user: CurrentUser) -> Result<HttpResponse, AppError> {
 
 async fn apply_submit(
     form: web::Form<ApplyForm>,
-    svc: web::Data<dyn LoanService>,
+    otp_svc: web::Data<dyn ActionOtpService>,
     user: CurrentUser,
 ) -> Result<HttpResponse, AppError> {
+    // Same guard as the form — POSTs can arrive without visiting the form.
+    if user.role != Role::Customer {
+        return Err(AppError::Forbidden);
+    }
     let form = form.into_inner();
 
     let re_render = |msg: String| -> Result<HttpResponse, AppError> {
@@ -157,6 +175,74 @@ async fn apply_submit(
         Err(_) => return re_render("Term must be a whole number of months.".into()),
     };
 
+    // Applying for credit is a sensitive action → OTP gate. The application
+    // is parked in action_otps and only submitted once the code verifies.
+    let challenge = otp_svc
+        .begin(
+            user.id,
+            "loan.apply",
+            serde_json::json!({
+                "principal": principal.to_string(),
+                "interest_rate": interest_rate.to_string(),
+                "term_months": term_months,
+            }),
+        )
+        .await?;
+
+    let pct = (interest_rate * Decimal::from(100)).round_dp(2).normalize();
+    render(OtpConfirmPage {
+        layout: LayoutCtx::from_user(Some(&user)),
+        title: "Confirm loan application".into(),
+        summary: vec![
+            ("Principal".into(), format!("${principal}")),
+            ("Annual rate".into(), format!("{pct}%")),
+            ("Term".into(), format!("{term_months} months")),
+        ],
+        action_url: "/loans/apply/confirm".into(),
+        cancel_url: "/loans".into(),
+        action_id: challenge.action_id,
+        demo_otp: if challenge.delivered { None } else { Some(challenge.otp) },
+        error: None,
+    })
+}
+
+async fn apply_confirm(
+    form: web::Form<ActionConfirmForm>,
+    svc: web::Data<dyn LoanService>,
+    otp_svc: web::Data<dyn ActionOtpService>,
+    user: CurrentUser,
+) -> Result<HttpResponse, AppError> {
+    if user.role != Role::Customer {
+        return Err(AppError::Forbidden);
+    }
+
+    let blank_form = |error: Option<String>, user: &CurrentUser| {
+        render(ApplyTemplate {
+            layout: LayoutCtx::from_user(Some(user)),
+            error,
+            principal: String::new(),
+            interest_rate: String::new(),
+            term_months: String::new(),
+        })
+    };
+
+    let payload = match otp_svc
+        .verify(user.id, form.action_id, "loan.apply", &form.otp)
+        .await
+    {
+        Ok(p) => p,
+        Err(AppError::BadRequest(msg)) | Err(AppError::Conflict(msg)) => {
+            return blank_form(Some(format!("{msg} — please start again.")), &user);
+        }
+        Err(other) => return Err(other),
+    };
+
+    let principal = Decimal::from_str(payload["principal"].as_str().unwrap_or_default())
+        .map_err(|_| AppError::Internal(anyhow::anyhow!("bad loan.apply payload")))?;
+    let interest_rate = Decimal::from_str(payload["interest_rate"].as_str().unwrap_or_default())
+        .map_err(|_| AppError::Internal(anyhow::anyhow!("bad loan.apply payload")))?;
+    let term_months = payload["term_months"].as_i64().unwrap_or_default() as i32;
+
     match svc
         .apply(user.id, principal, interest_rate, term_months)
         .await
@@ -164,7 +250,9 @@ async fn apply_submit(
         Ok(loan) => Ok(HttpResponse::Found()
             .insert_header(("Location", format!("/loans/{}", loan.id)))
             .finish()),
-        Err(AppError::BadRequest(msg)) | Err(AppError::Conflict(msg)) => re_render(msg),
+        Err(AppError::BadRequest(msg)) | Err(AppError::Conflict(msg)) => {
+            blank_form(Some(msg), &user)
+        }
         Err(other) => Err(other),
     }
 }

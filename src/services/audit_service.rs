@@ -6,6 +6,7 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, PgPool};
 
@@ -85,4 +86,69 @@ impl AuditService for PgAuditService {
         .await?;
         Ok(rows)
     }
+}
+
+// ── System snapshot ──────────────────────────────────────────────────
+
+/// Whole-bank state snapshot, appended to the audit log as `system.snapshot`.
+///
+/// `main` calls this after the HTTP server finishes its graceful shutdown
+/// (Ctrl-C / SIGTERM / `docker compose stop`), so the last audit row always
+/// records the state the server last saw. A *hard* crash (kill -9, power
+/// loss) can't run anything — but no data is lost there either: every
+/// committed transaction is already durable via PostgreSQL's WAL. This row is
+/// a forensic/ops marker, not a recovery mechanism.
+///
+/// A standalone function (not a trait method) so it can run after the
+/// service `Arc`s are dropped, and is trivially callable from tests.
+///
+/// Takes a plain `PgConnection` rather than the pool: at shutdown the worker
+/// pool's connections die with the workers, so acquiring from the shared pool
+/// can time out. `main` opens one dedicated connection for this final write.
+pub async fn snapshot_system_state(conn: &mut sqlx::PgConnection) -> Result<(), AppError> {
+    let (accounts, active_accounts, total_deposits, transfers, completed, loans, repayments): (
+        i64,
+        i64,
+        Option<Decimal>,
+        i64,
+        i64,
+        i64,
+        i64,
+    ) = sqlx::query_as(
+        r#"
+        SELECT
+            (SELECT COUNT(*)::BIGINT FROM accounts),
+            (SELECT COUNT(*)::BIGINT FROM accounts  WHERE status = 'active'),
+            (SELECT SUM(balance)     FROM accounts  WHERE status = 'active'),
+            (SELECT COUNT(*)::BIGINT FROM transfers),
+            (SELECT COUNT(*)::BIGINT FROM transfers WHERE status = 'completed'),
+            (SELECT COUNT(*)::BIGINT FROM loans),
+            (SELECT COUNT(*)::BIGINT FROM repayments)
+        "#,
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+
+    sqlx::query(
+        r#"INSERT INTO audit_log (actor_user_id, event, payload) VALUES (NULL, 'system.snapshot', $1)"#,
+    )
+    .bind(serde_json::json!({
+        "accounts": accounts,
+        "active_accounts": active_accounts,
+        "total_deposits": total_deposits.unwrap_or_default().to_string(),
+        "transfers": transfers,
+        "completed_transfers": completed,
+        "loans": loans,
+        "repayments": repayments,
+    }))
+    .execute(&mut *conn)
+    .await?;
+
+    tracing::info!(
+        accounts,
+        transfers,
+        loans,
+        "system.snapshot written to audit_log"
+    );
+    Ok(())
 }

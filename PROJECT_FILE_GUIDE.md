@@ -191,3 +191,21 @@ layout provides the nav, footer, light/dark theme, and the table-search helper.
 | `admin/accounts.html` | All accounts with search + CRUD (open for a user, freeze/unfreeze, close, adjust balance). |
 | `admin/transfers.html` | All transfers with search and a reason/flag column. |
 | `admin/audit.html` | Searchable audit log (latest 500 events). |
+
+---
+
+## Added during the hardening pass (June 2026)
+
+| File | What it is |
+|---|---|
+| `migrations/007_telegram.sql` | Telegram linking columns on `users` (chat id, single-use link code, phone) |
+| `migrations/008_names_and_action_otps.sql` | First/middle/last names (+backfill), the `action_otps` table, and the no-self-transfer trigger |
+| `src/services/telegram_service.rs` | `OtpChannel` trait (`TelegramOtp` / `ScreenOtp`), `getMe` helper, `getUpdates` poller with `/start`, `/unlink`, `/help` commands |
+| `src/services/action_otp_service.rs` | Generalized OTP guard: park a sensitive action, verify a single-use expiring code, return the payload |
+| `src/handlers/settings.rs` + `templates/settings/telegram.html` | Telegram linking guide page + OTP-gated unlink |
+| `templates/otp_confirm.html` | Shared confirmation page for all OTP-gated actions (`OtpConfirmPage` in `src/view.rs`) |
+| `templates/admin/race_demo.html` (+ handlers in `admin.rs`) | The concurrency lab: fire N simultaneous transfers, watch invariants hold |
+| `tests/transfer_concurrency.rs` | Race-condition + double-spend integration tests (DB-gated) |
+| `tests/shutdown_snapshot.rs` | Verifies the graceful-shutdown `system.snapshot` audit row |
+| `docs/FLOWS.md` | Mermaid sequence diagrams for every workflow |
+| `PROPOSAL.md` | Formative-assessment-style proposal draft (rewrite before submitting) |

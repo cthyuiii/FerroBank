@@ -35,15 +35,27 @@
     {% endif %}
   </div>
 
-  <!-- Demo OTP banner: in production this would arrive by SMS. -->
-  <div class="mt-4 p-4 rounded-lg border border-amber-300 bg-amber-50">
-    <div class="text-xs font-semibold uppercase tracking-wider text-amber-800">Demo only</div>
-    <div class="mt-1 text-sm text-stone-700">
-      Your one-time code is
-      <span class="inline-block font-mono text-lg font-bold tracking-widest text-amber-900 px-2 py-0.5 rounded bg-white border border-amber-300 mx-1">{{ demo_otp }}</span>
-      In production this would be sent by SMS — it appears on screen only for the assignment demo.
+  {% if let Some(code) = demo_otp %}
+    <!-- On-screen fallback: shown when the user hasn't linked Telegram. -->
+    <div class="mt-4 p-4 rounded-lg border border-amber-300 bg-amber-50">
+      <div class="text-xs font-semibold uppercase tracking-wider text-amber-800">Demo only</div>
+      <div class="mt-1 text-sm text-stone-700">
+        Your one-time code is
+        <span class="inline-block font-mono text-lg font-bold tracking-widest text-amber-900 px-2 py-0.5 rounded bg-white border border-amber-300 mx-1">{{ code }}</span>
+        <a href="/settings/telegram" class="text-amber-800 underline hover:text-amber-900">Link Telegram</a>
+        to receive codes on your phone instead.
+      </div>
     </div>
-  </div>
+  {% else %}
+    <!-- Out-of-band delivery: the code went to the user's Telegram. -->
+    <div class="mt-4 p-4 rounded-lg border border-blue-200 bg-blue-50">
+      <div class="text-xs font-semibold uppercase tracking-wider text-blue-700">Check Telegram</div>
+      <div class="mt-1 text-sm text-stone-700">
+        We sent your 6-digit code to your linked Telegram account. It never
+        appears on screen.
+      </div>
+    </div>
+  {% endif %}
 
   <form action="/transfers/confirm" method="POST" class="mt-6 space-y-4">
     <input type="hidden" name="transfer_id" value="{{ transfer.id }}">

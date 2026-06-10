@@ -35,6 +35,7 @@ use crate::errors::AppError;
 use crate::models::account::AccountStatus;
 use crate::models::transfer::{Transfer, TransferStatus};
 use crate::services::audit_service::AuditService;
+use crate::services::telegram_service::OtpChannel;
 
 // ── Tunables ─────────────────────────────────────────────────────────
 const MAX_TRANSFERS_PER_WINDOW: usize = 5;
@@ -45,6 +46,9 @@ const RATE_WINDOW: Duration = Duration::from_secs(60);
 pub struct TransferCreated {
     pub transfer: Transfer,
     pub otp: String,
+    /// `true` when the OTP was delivered out-of-band (Telegram). The handler
+    /// then hides the on-screen code and tells the user to check their phone.
+    pub otp_delivered: bool,
 }
 
 #[async_trait]
@@ -74,6 +78,9 @@ pub struct PgTransferService {
     // never on these fields. This is the encapsulation boundary.
     db: PgPool,
     audit: Arc<dyn AuditService>,
+    /// Out-of-band OTP delivery (Telegram), with on-screen fallback. Injected
+    /// as a trait object so the engine never knows which impl it's using.
+    otp_channel: Arc<dyn OtpChannel>,
     /// Per-account rolling list of recent attempt timestamps, gated by an
     /// async-aware Mutex. See module docs for why this lives alongside the
     /// database row locks.
@@ -81,10 +88,15 @@ pub struct PgTransferService {
 }
 
 impl PgTransferService {
-    pub fn new(db: PgPool, audit: Arc<dyn AuditService>) -> Self {
+    pub fn new(
+        db: PgPool,
+        audit: Arc<dyn AuditService>,
+        otp_channel: Arc<dyn OtpChannel>,
+    ) -> Self {
         Self {
             db,
             audit,
+            otp_channel,
             rate_limit: Mutex::new(HashMap::new()),
         }
     }
@@ -143,6 +155,33 @@ impl TransferService for PgTransferService {
             return Err(AppError::BadRequest("cannot transfer to the same account".into()));
         }
 
+        // No self-transfers at all: both accounts must belong to DIFFERENT
+        // users (a DB trigger from migration 008 backs this up).
+        let owners: Option<(i64, i64)> = sqlx::query_as(
+            r#"
+            SELECT fa.user_id, ta.user_id
+            FROM accounts fa, accounts ta
+            WHERE fa.id = $1 AND ta.id = $2
+            "#,
+        )
+        .bind(from_account_id)
+        .bind(to_account_id)
+        .fetch_optional(&self.db)
+        .await?;
+        match owners {
+            Some((f, t)) if f != t => {}
+            Some(_) => {
+                return Err(AppError::BadRequest(
+                    "you cannot transfer to yourself — the recipient account also belongs to you".into(),
+                ))
+            }
+            None => {
+                return Err(AppError::NotFound(
+                    "one of the accounts does not exist".into(),
+                ))
+            }
+        }
+
         // ── Application-level concurrency control ──────────────────────
         // Gate on a `tokio::sync::Mutex` before we even open a DB connection.
         self.check_rate_limit(from_account_id).await?;
@@ -194,15 +233,23 @@ impl TransferService for PgTransferService {
             )
             .await?;
 
-        // Real SMS would replace this. Logging the OTP is fine for the
-        // assignment demo — the grader can read it from the terminal.
-        tracing::info!(
-            transfer_id = transfer.id,
-            otp = %otp,
-            "transfer created — OTP is displayed for demo purposes only"
-        );
+        // Out-of-band delivery: send the code to the user's linked Telegram.
+        // Falls back to on-screen display when the user isn't linked (or no
+        // bot token is configured), so the demo always works.
+        let otp_delivered = self.otp_channel.send_otp(actor, &otp).await;
+        if !otp_delivered {
+            tracing::info!(
+                transfer_id = transfer.id,
+                otp = %otp,
+                "transfer created — OTP shown on screen (no Telegram linked)"
+            );
+        }
 
-        Ok(TransferCreated { transfer, otp })
+        Ok(TransferCreated {
+            transfer,
+            otp,
+            otp_delivered,
+        })
     }
 
     async fn confirm(
@@ -234,7 +281,22 @@ impl TransferService for PgTransferService {
             )));
         }
 
-        // (2) Verify the OTP.
+        // (2) The actor must own the source account. Without this check, any
+        // logged-in user who learned a transfer id could confirm it — or kill
+        // it by burning OTP attempts. Checked BEFORE OTP verification so a
+        // stranger's bad guesses can never flip the transfer to rejected.
+        let owner: Option<(i64,)> =
+            sqlx::query_as(r#"SELECT user_id FROM accounts WHERE id = $1"#)
+                .bind(pending.from_account_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        match owner {
+            Some((user_id,)) if user_id == actor => {}
+            // Dropping `tx` without commit rolls back; nothing was modified.
+            _ => return Err(AppError::Forbidden),
+        }
+
+        // (3) Verify the OTP.
         let stored_hash = pending
             .otp_hash
             .as_deref()
@@ -259,7 +321,7 @@ impl TransferService for PgTransferService {
             return Err(AppError::BadRequest("invalid confirmation code".into()));
         }
 
-        // (3) Lock both account rows. ORDER BY id eliminates deadlock potential
+        // (4) Lock both account rows. ORDER BY id eliminates deadlock potential
         //     when two concurrent transfers touch the same pair of accounts in
         //     opposite directions.
         let (low, high) = if pending.from_account_id < pending.to_account_id {
@@ -291,7 +353,7 @@ impl TransferService for PgTransferService {
         let from = accounts.iter().find(|a| a.0 == pending.from_account_id).unwrap();
         let to = accounts.iter().find(|a| a.0 == pending.to_account_id).unwrap();
 
-        // (4) Business-rule re-checks under the locks.
+        // (5) Business-rule re-checks under the locks.
         let reject_with = |reason: &str| -> AppError { AppError::Conflict(reason.into()) };
 
         if from.1 != AccountStatus::Active {
@@ -351,7 +413,7 @@ impl TransferService for PgTransferService {
             )));
         }
 
-        // (5) Move money + finalize transfer, all inside the same transaction.
+        // (6) Move money + finalize transfer, all inside the same transaction.
         //
         // We run the three writes through a helper and roll back EXPLICITLY if
         // any of them fails. (sqlx also rolls back automatically when a `tx` is
@@ -373,7 +435,7 @@ impl TransferService for PgTransferService {
 
         tx.commit().await?;
 
-        // (6) Audit outside the transaction — the audit_log row is its own
+        // (7) Audit outside the transaction — the audit_log row is its own
         //     atomic write and we don't want it blocking the money move.
         self.audit
             .record(

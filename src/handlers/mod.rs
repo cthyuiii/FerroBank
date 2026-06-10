@@ -8,4 +8,5 @@ pub mod admin;
 pub mod auth;
 pub mod home;
 pub mod loans;
+pub mod settings;
 pub mod transfers;

@@ -43,6 +43,8 @@ const SEED_USERS: &[SeedUser] = &[
     SeedUser { key: "bob",     email: "bob@ferrobank.local",     password: "bob123",     full_name: "Bob Johnson",      role: Role::Customer },
     SeedUser { key: "charlie", email: "charlie@ferrobank.local", password: "charlie123", full_name: "Charlie Williams", role: Role::Customer },
     SeedUser { key: "diana",   email: "diana@ferrobank.local",   password: "diana123",   full_name: "Diana Brown",      role: Role::Customer },
+    SeedUser { key: "eve",     email: "eve@ferrobank.local",     password: "eve123",     full_name: "Eve Davis",        role: Role::Customer },
+    SeedUser { key: "frank",   email: "frank@ferrobank.local",   password: "frank123",   full_name: "Frank Miller",     role: Role::Customer },
 ];
 
 // ── Account seed plan ───────────────────────────────────────────────
@@ -61,6 +63,9 @@ const SEED_ACCOUNTS: &[SeedAccount] = &[
     SeedAccount { key: "bob_checking",     owner: "bob",     kind: AccountType::Checking, initial_balance_cents:  80_000 },
     SeedAccount { key: "charlie_checking", owner: "charlie", kind: AccountType::Checking, initial_balance_cents:  35_000 },
     SeedAccount { key: "diana_savings",    owner: "diana",   kind: AccountType::Savings,  initial_balance_cents:      0 },
+    SeedAccount { key: "eve_savings",      owner: "eve",     kind: AccountType::Savings,  initial_balance_cents: 750_000 },
+    SeedAccount { key: "eve_checking",     owner: "eve",     kind: AccountType::Checking, initial_balance_cents: 150_000 },
+    SeedAccount { key: "frank_checking",   owner: "frank",   kind: AccountType::Checking, initial_balance_cents:  60_000 },
 ];
 
 // ── main ────────────────────────────────────────────────────────────
@@ -111,7 +116,7 @@ async fn main() -> anyhow::Result<()> {
     println!("  admin@ferrobank.local   / admin123");
     println!("  teller@ferrobank.local  / teller123");
     println!("  alice@ferrobank.local   / alice123");
-    println!("  (others: bob, charlie, diana — same pattern)");
+    println!("  (others: bob, charlie, diana, eve, frank — same pattern)");
     Ok(())
 }
 
@@ -123,10 +128,16 @@ async fn seed_users(
 ) -> anyhow::Result<HashMap<&'static str, i64>> {
     let mut ids = HashMap::new();
     for u in SEED_USERS {
+        // Split the display name into first/last for the structured columns.
+        let mut parts = u.full_name.splitn(2, ' ');
+        let first = parts.next().unwrap_or("User").to_string();
+        let last = parts.next().unwrap_or("FerroBank").to_string();
         let new = NewUser {
             email: u.email.to_string(),
             password: u.password.to_string(),
-            full_name: u.full_name.to_string(),
+            first_name: first,
+            middle_name: None,
+            last_name: last,
             role: u.role,
         };
         match auth.register(new).await {
@@ -163,25 +174,28 @@ async fn seed_accounts(
         let existing = accounts.list_for_user(user_id).await?;
         let account_id = match existing.iter().find(|x| x.kind == a.kind) {
             Some(x) => {
-                println!("  · exists  {:<22} kind={:?}  id={}", a.key, a.kind, x.id);
+                // Existing account → leave it completely alone. The seed must
+                // be non-destructive: re-running it (or every `docker compose
+                // up`) must never reset balances that real transfers changed.
+                println!("  · exists  {:<22} kind={:?}  id={} (untouched)", a.key, a.kind, x.id);
                 x.id
             }
             None => {
                 let x = accounts.open_account(user_id, a.kind, true).await?;
+                // Set the starting balance directly — only on first creation.
+                // Bypassing the transfer flow is fine here because this is the
+                // dev seed; production never SETs a balance, it only moves
+                // money between accounts.
+                let balance = Decimal::new(a.initial_balance_cents, 2);
+                sqlx::query("UPDATE accounts SET balance = $1 WHERE id = $2")
+                    .bind(balance)
+                    .bind(x.id)
+                    .execute(pool)
+                    .await?;
                 println!("  ✓ created {:<22} kind={:?}  id={}", a.key, a.kind, x.id);
                 x.id
             }
         };
-
-        // Set the starting balance directly. Bypassing the transfer flow is
-        // fine here because this is the dev seed; production never SETs a
-        // balance, it only moves money between accounts.
-        let balance = Decimal::new(a.initial_balance_cents, 2);
-        sqlx::query("UPDATE accounts SET balance = $1 WHERE id = $2")
-            .bind(balance)
-            .bind(account_id)
-            .execute(pool)
-            .await?;
 
         ids.insert(a.key, account_id);
     }
@@ -240,12 +254,20 @@ async fn seed_transfers(
     // (from, to, amount, status, note, status_reason, days_ago)
     // `status_reason` is only meaningful for non-completed transfers; it explains
     // why the transfer was rejected so the UI doesn't have to guess.
+    // The last five rows are fraud-rule demos — one per dashboard signal:
+    // structuring (just under $10k), large (≥ $10k), an explicit rejection,
+    // and a 4-transfer velocity burst from one account inside 24 hours.
     let plan: &[(&str, &str, &str, &str, &str, Option<&str>, i32)] = &[
-        ("alice_checking",  "bob_checking",     "100.00",  "completed", "rent split",   None,                        7),
-        ("bob_checking",    "charlie_checking",  "50.00",  "completed", "groceries",    None,                        1),
-        ("alice_savings",   "diana_savings",    "200.00",  "completed", "welcome gift", None,                        0),
-        ("alice_checking",  "bob_savings",     "9999.00",  "completed", "wedding gift", None,                        2),
-        ("bob_checking",    "alice_checking",    "25.00",  "rejected",  "test",         Some("insufficient funds"),  3),
+        ("alice_checking",  "bob_checking",      "100.00", "completed", "rent split",     None,                       7),
+        ("bob_checking",    "charlie_checking",   "50.00", "completed", "groceries",      None,                       1),
+        ("alice_savings",   "diana_savings",     "200.00", "completed", "welcome gift",   None,                       0),
+        ("alice_checking",  "bob_savings",      "9999.00", "completed", "invoice 4471",   None,                       2),
+        ("eve_savings",     "frank_checking",  "12500.00", "completed", "car purchase",   None,                       4),
+        ("bob_checking",    "alice_checking",     "25.00", "rejected",  "test",           Some("insufficient funds"), 3),
+        ("charlie_checking", "bob_checking",      "40.00", "completed", "split bill 1/4", None,                       0),
+        ("charlie_checking", "bob_checking",      "40.00", "completed", "split bill 2/4", None,                       0),
+        ("charlie_checking", "bob_checking",      "40.00", "completed", "split bill 3/4", None,                       0),
+        ("charlie_checking", "bob_checking",      "40.00", "completed", "split bill 4/4", None,                       0),
     ];
 
     for (from_key, to_key, amount, status, note, reason, days_ago) in plan {

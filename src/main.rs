@@ -12,15 +12,19 @@ use actix_session::{storage::CookieSessionStore, SessionMiddleware};
 use actix_web::{cookie::Key, web, App, HttpServer};
 use tracing_actix_web::TracingLogger;
 
+use sqlx::Connection as _;
+
 use ferrobank::{
     config::Config,
     db, routes,
     services::{
         account_service::{AccountService, PgAccountService},
+        action_otp_service::{ActionOtpService, PgActionOtpService},
         admin_service::{AdminService, PgAdminService},
         audit_service::{AuditService, PgAuditService},
         auth_service::{AuthService, PgAuthService},
         loan_service::{LoanService, PgLoanService},
+        telegram_service::{self, OtpChannel, ScreenOtp, TelegramOtp},
         transfer_service::{PgTransferService, TransferService},
     },
     state::AppState,
@@ -48,10 +52,21 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("running migrations");
     sqlx::migrate!("./migrations").run(&pool).await?;
 
-    // 3. Shared application state
+    // 3. Telegram (optional): resolve the bot's username once for deep links.
+    let telegram_bot = match &config.telegram_bot_token {
+        Some(token) => telegram_service::bot_username(token).await,
+        None => None,
+    };
+    match &telegram_bot {
+        Some(bot) => tracing::info!(bot = %bot, "telegram OTP delivery enabled"),
+        None => tracing::info!("telegram OTP not configured — codes shown on screen"),
+    }
+
+    // 4. Shared application state
     let state = web::Data::new(AppState {
         db: pool.clone(),
         config: config.clone(),
+        telegram_bot,
     });
 
     // ── Service wiring ───────────────────────────────────────────────────
@@ -61,14 +76,28 @@ async fn main() -> anyhow::Result<()> {
     //
     // Teammates: do NOT add new lines to main.rs when you fill in your service.
     // Just implement the `new(...)` constructor with the signature shown.
+    // OTP channel: Telegram when configured, on-screen fallback otherwise.
+    // The poller is the background task that completes /start account links.
+    let otp_channel: Arc<dyn OtpChannel> = match &config.telegram_bot_token {
+        Some(token) => {
+            tokio::spawn(telegram_service::run_link_poller(pool.clone(), token.clone()));
+            Arc::new(TelegramOtp::new(pool.clone(), token))
+        }
+        None => Arc::new(ScreenOtp),
+    };
+
     let auth_service: Arc<dyn AuthService> = Arc::new(PgAuthService::new(pool.clone()));
     let account_service: Arc<dyn AccountService> = Arc::new(PgAccountService::new(pool.clone()));
     let audit_service: Arc<dyn AuditService> = Arc::new(PgAuditService::new(pool.clone()));
     let transfer_service: Arc<dyn TransferService> = Arc::new(PgTransferService::new(
         pool.clone(),
         audit_service.clone(),
+        otp_channel.clone(),
     ));
     let loan_service: Arc<dyn LoanService> = Arc::new(PgLoanService::new(pool.clone()));
+    // Generalized OTP guard for account opening / loan applications / profile changes.
+    let action_otp_service: Arc<dyn ActionOtpService> =
+        Arc::new(PgActionOtpService::new(pool.clone(), otp_channel.clone()));
     // Admin service composes the others. Build it last and inject the deps.
     let admin_service: Arc<dyn AdminService> = Arc::new(
         PgAdminService::new(pool.clone()).with_services(
@@ -85,6 +114,7 @@ async fn main() -> anyhow::Result<()> {
     let loan_data = web::Data::from(loan_service);
     let admin_data = web::Data::from(admin_service);
     let audit_data = web::Data::from(audit_service);
+    let action_otp_data = web::Data::from(action_otp_service);
 
     // ── HTTP server ──────────────────────────────────────────────────────
     let session_key = Key::from(config.session_secret.as_bytes());
@@ -102,6 +132,7 @@ async fn main() -> anyhow::Result<()> {
             .app_data(loan_data.clone())
             .app_data(admin_data.clone())
             .app_data(audit_data.clone())
+            .app_data(action_otp_data.clone())
             .wrap(TracingLogger::default())
             .wrap(
                 SessionMiddleware::builder(CookieSessionStore::default(), session_key.clone())
@@ -116,6 +147,25 @@ async fn main() -> anyhow::Result<()> {
     .bind((bind_host, bind_port))?
     .run()
     .await?;
+
+    // ── Graceful-shutdown snapshot ──────────────────────────────────────
+    // `run()` only returns once actix has finished a graceful shutdown
+    // (Ctrl-C / SIGTERM), so this is the server's final act: append a
+    // whole-bank state snapshot to the audit log.
+    // Use a dedicated connection: the shared pool's connections lived on the
+    // (now stopped) worker runtimes, so acquiring from it can time out here.
+    tracing::info!("server stopped — writing shutdown snapshot to audit_log");
+    match sqlx::postgres::PgConnection::connect(&config.database_url).await {
+        Ok(mut conn) => {
+            if let Err(e) =
+                ferrobank::services::audit_service::snapshot_system_state(&mut conn).await
+            {
+                tracing::error!(error = ?e, "failed to write shutdown snapshot");
+            }
+            let _ = conn.close().await;
+        }
+        Err(e) => tracing::error!(error = ?e, "could not connect for shutdown snapshot"),
+    }
 
     Ok(())
 }
