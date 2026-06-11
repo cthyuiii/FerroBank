@@ -10,7 +10,7 @@
     Fires N transfers <strong>at the same instant</strong> against one source
     account, exercising the full production engine: Mutex rate-limiter, OTP,
     and <code class="text-xs">SELECT … FOR UPDATE</code> row locks. Pick
-    amount × tasks larger than the source balance to force contention — the
+    amount × tasks larger than the source balance to force contention - the
     locks serialize the balance checks, so the account can never be overdrawn.
   </p>
 
@@ -41,7 +41,7 @@
              class="mt-1 w-full px-3 py-2 rounded-md border border-stone-300 bg-white font-mono">
     </div>
     <div>
-      <label class="block text-sm font-medium text-stone-700">Concurrent tasks (1–10)</label>
+      <label class="block text-sm font-medium text-stone-700">Concurrent tasks (1-10)</label>
       <input type="number" name="tasks" value="5" min="1" max="10" required
              class="mt-1 w-full px-3 py-2 rounded-md border border-stone-300 bg-white font-mono">
       <p class="mt-1 text-xs text-stone-500">More than 5 also demos the per-minute Mutex rate limit.</p>
@@ -116,7 +116,7 @@
 
     <p class="mt-4 text-xs text-stone-500">
       Each task ran the real two-step flow (create → OTP → confirm) on its own
-      database connection. Row locks forced the confirms into a queue — the
+      database connection. Row locks forced the confirms into a queue - the
       timing column shows them finishing one after another, never interleaved.
       Verify in the <a href="/admin/audit" class="text-amber-700 hover:underline">audit log</a>
       or in psql: <code class="text-[11px]">SELECT id, amount, status, status_reason FROM transfers ORDER BY id DESC LIMIT {{ r.rows.len() }};</code>

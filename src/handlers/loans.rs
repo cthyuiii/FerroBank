@@ -1,4 +1,4 @@
-//! Loans handlers — owned by the Loans module (Member 5).
+//! Loans handlers - owned by the Loans module (Member 5).
 //!
 //! Routes:
 //!   GET  /loans               → customers see their own loans; staff see all loans
@@ -35,7 +35,8 @@ pub fn routes(cfg: &mut web::ServiceConfig) {
             .route("/{id}", web::get().to(detail))
             .route("/{id}/repay", web::post().to(repay))
             .route("/{id}/approve", web::post().to(approve))
-            .route("/{id}/reject", web::post().to(reject)),
+            .route("/{id}/reject", web::post().to(reject))
+            .route("/{id}/status", web::get().to(status)),
     );
 }
 
@@ -133,7 +134,7 @@ async fn apply_form(
     account_svc: web::Data<dyn AccountService>,
     user: CurrentUser,
 ) -> Result<HttpResponse, AppError> {
-    // Only customers borrow — staff can't own accounts, so a staff loan could
+    // Only customers borrow - staff can't own accounts, so a staff loan could
     // never be repaid (repayments debit a funding account).
     if user.role != Role::Customer {
         return Err(AppError::Forbidden);
@@ -167,7 +168,7 @@ async fn apply_submit(
     account_svc: web::Data<dyn AccountService>,
     user: CurrentUser,
 ) -> Result<HttpResponse, AppError> {
-    // Same guard as the form — POSTs can arrive without visiting the form.
+    // Same guard as the form - POSTs can arrive without visiting the form.
     if user.role != Role::Customer {
         return Err(AppError::Forbidden);
     }
@@ -262,8 +263,21 @@ async fn apply_confirm(
         .await
     {
         Ok(p) => p,
-        Err(AppError::BadRequest(msg)) | Err(AppError::Conflict(msg)) => {
-            return blank_form(Some(format!("{msg} — please start again.")), &user);
+        // Wrong code: retry inline on the same confirmation page.
+        Err(AppError::BadRequest(msg)) => {
+            return render(OtpConfirmPage {
+                layout: LayoutCtx::from_user(Some(&user)),
+                title: "Confirm loan application".into(),
+                summary: vec![],
+                action_url: "/loans/apply/confirm".into(),
+                cancel_url: "/loans".into(),
+                action_id: form.action_id,
+                demo_otp: None,
+                error: Some(msg),
+            });
+        }
+        Err(AppError::Conflict(msg)) => {
+            return blank_form(Some(format!("{msg} - please start again.")), &user);
         }
         Err(other) => return Err(other),
     };
@@ -326,7 +340,7 @@ async fn render_loan_detail(
     let can_repay = (loan.status == LoanStatus::Approved || loan.status == LoanStatus::Active)
         && loan.user_id == user.id;
 
-    // Funding accounts for the repay form — only the borrower needs them.
+    // Funding accounts for the repay form - only the borrower needs them.
     let repay_accounts: Vec<Account> = if can_repay {
         account_svc
             .list_for_user(user.id)
@@ -426,7 +440,12 @@ async fn approve(
         return Err(AppError::Forbidden);
     }
     let loan_id = path.into_inner();
-    svc.approve(loan_id, user.id, user.role).await?;
+    match svc.approve(loan_id, user.id, user.role).await {
+        // Already decided / already approved by this role: the loan page
+        // shows the live state, so just return to it.
+        Ok(_) | Err(AppError::Conflict(_)) => {}
+        Err(e) => return Err(e),
+    }
 
     Ok(HttpResponse::Found()
         .insert_header(("Location", format!("/loans/{loan_id}")))
@@ -443,11 +462,28 @@ async fn reject(
         return Err(AppError::Forbidden);
     }
     let loan_id = path.into_inner();
-    svc.reject(loan_id).await?;
+    match svc.reject(loan_id).await {
+        Ok(_) | Err(AppError::Conflict(_)) => {}
+        Err(e) => return Err(e),
+    }
 
     Ok(HttpResponse::Found()
         .insert_header(("Location", format!("/loans/{loan_id}")))
         .finish())
+}
+
+/// Live status for pending loans: the page refreshes itself the moment the
+/// dual approval completes (or the application is declined).
+async fn status(
+    path: web::Path<i64>,
+    svc: web::Data<dyn LoanService>,
+    user: CurrentUser,
+) -> Result<HttpResponse, AppError> {
+    let loan = svc.get_by_id(path.into_inner()).await?;
+    if loan.user_id != user.id && user.role == Role::Customer {
+        return Err(AppError::Forbidden);
+    }
+    Ok(HttpResponse::Ok().json(serde_json::json!({ "status": loan.status.label() })))
 }
 
 // ── Render helper ────────────────────────────────────────────────────

@@ -1,4 +1,4 @@
-//! Loan service — owned by the Loans module (Member 5).
+//! Loan service - owned by the Loans module (Member 5).
 //!
 //! Uses a **simple-interest** model for clarity: total amount due is
 //!     `principal * (1 + interest_rate * term_months / 12)`
@@ -64,7 +64,7 @@ pub trait LoanService: Send + Sync {
     async fn list_repayments(&self, loan_id: i64) -> Result<Vec<Repayment>, AppError>;
 
     // ── Admin Dashboard hooks ────────────────────────────────────────
-    /// Every loan in the bank, newest first — the staff loan view.
+    /// Every loan in the bank, newest first - the staff loan view.
     async fn list_all(&self) -> Result<Vec<Loan>, AppError>;
     async fn portfolio_outstanding(&self) -> Result<Decimal, AppError>;
 }
@@ -99,7 +99,7 @@ impl LoanService for PgLoanService {
         term_months: i32,
         disbursement_account_id: i64,
     ) -> Result<Loan, AppError> {
-        // Defence-in-depth — the table CHECK constraints catch these too,
+        // Defence-in-depth - the table CHECK constraints catch these too,
         // but a clear AppError beats a SQL error in the UX.
         if principal <= Decimal::ZERO {
             return Err(AppError::BadRequest("principal must be positive".into()));
@@ -165,7 +165,7 @@ impl LoanService for PgLoanService {
 
         let mut tx = self.db.begin().await?;
 
-        // Lock the loan — only a pending loan can collect approvals.
+        // Lock the loan - only a pending loan can collect approvals.
         let loan: Loan = sqlx::query_as::<_, Loan>(
             r#"
             SELECT id, user_id, principal, interest_rate, term_months, status, disbursement_account_id, next_payment_due, created_at
@@ -265,7 +265,7 @@ impl LoanService for PgLoanService {
                     }
                     _ => {
                         return Err(AppError::Conflict(
-                            "the borrower's disbursement account is not active — cannot approve".into(),
+                            "the borrower's disbursement account is not active - cannot approve".into(),
                         ))
                     }
                 }
@@ -292,12 +292,21 @@ impl LoanService for PgLoanService {
                 .next_payment_due
                 .map(|d| d.format("%Y-%m-%d").to_string())
                 .unwrap_or_else(|| "next month".into());
-            let msg = format!(
-                "Loan #{loan_id} APPROVED — ${} disbursed to your chosen account. First repayment due {due}.",
-                result.principal
-            );
-            notify(&self.db, result.user_id, &msg).await;
-            self.otp_channel.send_note(result.user_id, &msg).await;
+            notify(
+                &self.db,
+                result.user_id,
+                &format!(
+                    "Loan APPROVED - ${} disbursed to your chosen account. First repayment due {due}.",
+                    result.principal
+                ),
+            )
+            .await;
+            self.otp_channel
+                .send_note(
+                    result.user_id,
+                    "Your recent loan has been approved - open the app now to check.",
+                )
+                .await;
         }
         tracing::info!(loan_id, ?slot, fully_approved, "loan approval recorded");
         Ok(result)
@@ -455,7 +464,7 @@ impl LoanService for PgLoanService {
         tx.commit().await?;
 
         let msg = if new_status == LoanStatus::PaidOff {
-            format!("Repayment of ${amount} received — loan #{loan_id} is fully PAID OFF. 🎉")
+            format!("Repayment of ${amount} received - loan #{loan_id} is fully PAID OFF. 🎉")
         } else {
             let due = (Utc::now() + chrono::Duration::days(30)).format("%Y-%m-%d");
             format!(

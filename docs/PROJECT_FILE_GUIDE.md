@@ -1,4 +1,4 @@
-# FerroBank — File-by-File Guide
+# FerroBank - File-by-File Guide
 
 A complete tour of every file in the project and what it does. The codebase follows
 a **layered architecture**: a request flows
@@ -8,11 +8,11 @@ HTTP → handler (routes/parse) → service (business logic, trait) → model/DB
 ```
 
 Handlers depend on service **traits** (`web::Data<dyn XxxService>`), never concrete
-types — that's the OOP/polymorphism story and what makes modules swappable/testable.
+types - that's the OOP/polymorphism story and what makes modules swappable/testable.
 
 ---
 
-## Root — configuration & meta
+## Root - configuration & meta
 
 | File | Purpose |
 |---|---|
@@ -33,11 +33,11 @@ types — that's the OOP/polymorphism story and what makes modules swappable/tes
 | `docs/uml_service_architecture.mermaid` | UML class diagram of the service traits, impls, and HTTP layer. |
 | `PROJECT_FILE_GUIDE.md` | This document. |
 | `LICENSE` | MIT license. |
-| `static/.gitkeep` | Placeholder so the (otherwise empty) `static/` directory — served at `/static` — is tracked by git. |
+| `static/.gitkeep` | Placeholder so the (otherwise empty) `static/` directory - served at `/static` - is tracked by git. |
 
 ---
 
-## `migrations/` — database schema (SQLx, applied in order)
+## `migrations/` - database schema (SQLx, applied in order)
 
 These run automatically on startup (by both the app and the seed binary). The schema
 is fully normalised; every table links back to `users`/`accounts` via foreign keys.
@@ -46,10 +46,10 @@ is fully normalised; every table links back to `users`/`accounts` via foreign ke
 |---|---|
 | `001_init.sql` | `user_role` enum (`customer`/`teller`/`admin`) and the `users` table. |
 | `002_accounts.sql` | `account_type` + `account_status` enums (status includes **`pending`** for teller approval) and the `accounts` table, with a non-negative-balance check **and a trigger enforcing that only customers may own accounts**. |
-| `003_transfers.sql` | `transfer_status` enum and the `transfers` table — includes `otp_hash`, `status_reason` (rejection/flag explanation), and positive-amount / no-self-transfer checks. |
-| `004_audit_log.sql` | `audit_log` table — append-only event log with a JSONB payload. |
+| `003_transfers.sql` | `transfer_status` enum and the `transfers` table - includes `otp_hash`, `status_reason` (rejection/flag explanation), and positive-amount / no-self-transfer checks. |
+| `004_audit_log.sql` | `audit_log` table - append-only event log with a JSONB payload. |
 | `005_loans.sql` | `loan_status` enum, the `loans` table, **and** the `loan_approvals` table that powers dual (teller+admin) approval. |
-| `006_repayments.sql` | `repayments` table — includes `account_id`, the funding account each repayment is debited from. |
+| `006_repayments.sql` | `repayments` table - includes `account_id`, the funding account each repayment is debited from. |
 
 > Note: the former `007_feature_upgrades.sql` has been folded into 003/005/006 so the
 > schema reads as one coherent design. Because that changes existing migration
@@ -57,30 +57,30 @@ is fully normalised; every table links back to `users`/`accounts` via foreign ke
 
 ---
 
-## `src/` — application entry points
+## `src/` - application entry points
 
 | File | Purpose |
 |---|---|
 | `main.rs` | Binary entrypoint: loads config, connects to Postgres, runs migrations, builds the Actix `App`, wires every service into shared state, configures the session middleware, and serves HTTP. |
-| `lib.rs` | The library crate root — declares all modules (`config`, `db`, `errors`, `handlers`, `middleware`, `models`, `routes`, `services`, `state`, `view`). `main.rs` and `seed.rs` both build on this. |
+| `lib.rs` | The library crate root - declares all modules (`config`, `db`, `errors`, `handlers`, `middleware`, `models`, `routes`, `services`, `state`, `view`). `main.rs` and `seed.rs` both build on this. |
 | `bin/seed.rs` | Standalone `seed` binary. Applies migrations, then inserts demo users, accounts, loans (with teller+admin approvals), backdated transfers, and audit entries. Idempotent. |
 
 ---
 
-## `src/` — platform infrastructure (Member 1, Platform Lead)
+## `src/` - platform infrastructure (Member 1, Platform Lead)
 
 | File | Purpose |
 |---|---|
-| `config.rs` | `Config::from_env()` — reads `DATABASE_URL`, `APP_HOST`, `APP_PORT`, `SESSION_SECRET` (and validates the secret is ≥ 64 bytes). |
-| `db.rs` | `connect()` — builds the `PgPool` (connection pool) with sensible limits/timeouts. |
-| `state.rs` | `AppState { db, config }` — shared state injected into handlers via `web::Data<AppState>`. |
-| `errors.rs` | `AppError` — the single error type every service/handler returns. Implements Actix's `ResponseError` so `?` maps cleanly to HTTP status codes and a rendered error page (and bounces `Unauthorized` to `/login`). |
-| `view.rs` | `LayoutCtx` / `UserChip` — the view-model the base layout reads to render the nav (who's logged in, their role). `from_user()` / `anonymous()`. |
+| `config.rs` | `Config::from_env()` - reads `DATABASE_URL`, `APP_HOST`, `APP_PORT`, `SESSION_SECRET` (and validates the secret is ≥ 64 bytes). |
+| `db.rs` | `connect()` - builds the `PgPool` (connection pool) with sensible limits/timeouts. |
+| `state.rs` | `AppState { db, config }` - shared state injected into handlers via `web::Data<AppState>`. |
+| `errors.rs` | `AppError` - the single error type every service/handler returns. Implements Actix's `ResponseError` so `?` maps cleanly to HTTP status codes and a rendered error page (and bounces `Unauthorized` to `/login`). |
+| `view.rs` | `LayoutCtx` / `UserChip` - the view-model the base layout reads to render the nav (who's logged in, their role). `from_user()` / `anonymous()`. |
 | `routes.rs` | The single place that mounts every module's routes onto the Actix app. |
 
 ---
 
-## `src/middleware/` — auth guard & extractors
+## `src/middleware/` - auth guard & extractors
 
 | File | Purpose |
 |---|---|
@@ -89,7 +89,7 @@ is fully normalised; every table links back to `users`/`accounts` via foreign ke
 
 ---
 
-## `src/models/` — domain entities (one file per owner)
+## `src/models/` - domain entities (one file per owner)
 
 These are the Rust structs that map to database rows (`#[derive(FromRow)]`) plus
 small display helpers. Money is always `rust_decimal::Decimal`, never `f64`.
@@ -104,7 +104,7 @@ small display helpers. Money is always `rust_decimal::Decimal`, never `f64`.
 
 ---
 
-## `src/services/` — business logic (trait + Postgres impl)
+## `src/services/` - business logic (trait + Postgres impl)
 
 The heart of the app. Each service is a trait (the abstraction handlers depend on)
 with a `Pg…` implementation. This is where transactions, locks, and rules live.
@@ -121,7 +121,7 @@ with a `Pg…` implementation. This is where transactions, locks, and rules live
 
 ---
 
-## `src/handlers/` — Actix routes (one file per module)
+## `src/handlers/` - Actix routes (one file per module)
 
 Thin layer: parse the request, call a service, render a template (or redirect).
 Each exposes `pub fn routes(cfg)`; `routes.rs` mounts them.
@@ -129,16 +129,16 @@ Each exposes `pub fn routes(cfg)`; `routes.rs` mounts them.
 | File | Routes / purpose |
 |---|---|
 | `mod.rs` | Declares the handler modules. |
-| `home.rs` | `GET /` — the public landing page (session-aware, so the nav/CTAs reflect login state). |
-| `auth.rs` | `GET/POST /login`, `GET/POST /register`, `POST /logout`. Registered as plain routes (no empty scope — that earlier caused 404s). |
+| `home.rs` | `GET /` - the public landing page (session-aware, so the nav/CTAs reflect login state). |
+| `auth.rs` | `GET/POST /login`, `GET/POST /register`, `POST /logout`. Registered as plain routes (no empty scope - that earlier caused 404s). |
 | `accounts.rs` | Customer account pages: list, open, detail, freeze, close. |
 | `transfers.rs` | Transfer history, new-transfer form (from-account dropdown), create (resolves recipient name for the confirm page), and OTP confirm. |
 | `loans.rs` | Loan list (customer view vs staff review queue), apply, detail (with approval progress + repay form), repay (account selection), approve (teller/admin), reject. |
-| `admin.rs` | Two scopes. `/admin` (`RequireRole(Admin)`): dashboard with fraud signals, searchable audit log, account mutations (open/freeze/unfreeze/close/adjust). `/staff` (`RequireRole(Teller)` — teller **and** admin): all-accounts page with **account approval**, and all-transfers page with a date-range filter. |
+| `admin.rs` | Two scopes. `/admin` (`RequireRole(Admin)`): dashboard with fraud signals, searchable audit log, account mutations (open/freeze/unfreeze/close/adjust). `/staff` (`RequireRole(Teller)` - teller **and** admin): all-accounts page with **account approval**, and all-transfers page with a date-range filter. |
 
 ---
 
-## `templates/` — Askama server-side rendering
+## `templates/` - Askama server-side rendering
 
 Compile-time-checked HTML templates. Tailwind (via CDN) for styling; a shared base
 layout provides the nav, footer, light/dark theme, and the table-search helper.
@@ -148,7 +148,7 @@ layout provides the nav, footer, light/dark theme, and the table-search helper.
 | File | Purpose |
 |---|---|
 | `layout.html` | Base layout every page extends: `<head>`, theme system (light/dark, pre-paint script), transitions, the footer, and shared JS (`fbToggleTheme`, `fbFilterTable`). |
-| `partials/nav.html` | Top navigation bar — role-aware (hides customer Accounts/Transfers tabs for admins), theme toggle, sign-in/out. |
+| `partials/nav.html` | Top navigation bar - role-aware (hides customer Accounts/Transfers tabs for admins), theme toggle, sign-in/out. |
 | `home.html` | Landing page hero + feature cards + trust section; CTAs change when logged in. |
 | `error.html` | Friendly error page rendered by `AppError`. |
 
@@ -194,30 +194,17 @@ layout provides the nav, footer, light/dark theme, and the table-search helper.
 
 ---
 
-## Added during the hardening pass (June 2026)
+## Security & verification additions
 
 | File | What it is |
 |---|---|
-| `migrations/007_telegram.sql` | Telegram linking columns on `users` (chat id, single-use link code, phone) |
-| `migrations/008_names_and_action_otps.sql` | First/middle/last names (+backfill), the `action_otps` table, and the no-self-transfer trigger |
-| `src/services/telegram_service.rs` | `OtpChannel` trait (`TelegramOtp` / `ScreenOtp`), `getMe` helper, `getUpdates` poller with `/start`, `/unlink`, `/help` commands |
-| `src/services/action_otp_service.rs` | Generalized OTP guard: park a sensitive action, verify a single-use expiring code, return the payload |
-| `src/handlers/settings.rs` + `templates/settings/telegram.html` | Telegram linking guide page + OTP-gated unlink |
-| `templates/otp_confirm.html` | Shared confirmation page for all OTP-gated actions (`OtpConfirmPage` in `src/view.rs`) |
-| `templates/admin/race_demo.html` (+ handlers in `admin.rs`) | The concurrency lab: fire N simultaneous transfers, watch invariants hold |
-| `tests/transfer_concurrency.rs` | Race-condition + double-spend integration tests (DB-gated) |
-| `tests/shutdown_snapshot.rs` | Verifies the graceful-shutdown `system.snapshot` audit row |
-| `docs/FLOWS.md` | Mermaid sequence diagrams for every workflow |
-| `PROPOSAL.md` | Formative-assessment-style proposal draft (rewrite before submitting) |
-
-
-## Security-hardening pass additions
-
-| File | What it is |
-|---|---|
-| `migrations/001–007` (consolidated) | One clean migration per module — names/NRIC/Telegram on users, transfer limits + `limit_changes`, `on_hold` transfers + `transfer_reviews`, `notifications`, loan disbursement, `action_otps` |
-| `src/middleware/auth.rs::ActivityGuard` | Global middleware: per-user request log, 5-min inactivity TTL on DB time, mandatory Telegram linking for customers |
-| `src/handlers/transfers.rs` (review) + `templates/transfers/review.html` | Customer side of the fraud-hold pipeline (purpose + NRIC) |
-| `src/handlers/admin.rs` (review queue) + `templates/admin/review.html` | Staff release/deny queue with NRIC comparison |
-| `templates/otp_confirm.html` + `src/services/action_otp_service.rs` | One OTP page + service guarding every sensitive action |
-| `docs/er_diagram.mermaid` | Entity-relationship diagram of the full schema |
+| `migrations/001-007` | Consolidated schema, one file per module: users (names, NRIC, Telegram, activity), accounts (+limits, limit_changes, adjustment_requests), transfers (+on_hold, reviews, OTP attempts), audit+notifications, loans (+disbursement, due dates), repayments, action_otps |
+| `src/middleware/auth.rs::ActivityGuard` | Per-user request trail, 5-min inactivity TTL on DB time, mandatory Telegram linking |
+| `src/services/telegram_service.rs` | `OtpChannel` trait (`TelegramOtp` / `ScreenOtp`), bot poller with /start, /unlink, /help |
+| `src/services/action_otp_service.rs` | Generalized OTP guard for account opening, loans, limits, profile changes |
+| `src/handlers/settings.rs` + `templates/settings/telegram.html` | Linking guide (auto-refresh), OTP-gated unlink/email/password |
+| `templates/otp_confirm.html` | Shared confirmation page for every OTP-gated action |
+| `templates/transfers/review.html` + `templates/admin/review.html` | Fraud-hold pipeline: customer purpose+NRIC, staff release/deny |
+| `templates/admin/race_demo.html` | Concurrency lab (admin) |
+| `tests/` | Race-condition, double-spend, and shutdown-snapshot integration tests |
+| `docs/er_diagram.mermaid`, `docs/FLOWS.md` | ER model and sequence diagrams |

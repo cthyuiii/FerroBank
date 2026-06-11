@@ -38,7 +38,7 @@
             <option
               value="{{ opt.account.id }}"
               {% if opt.selected %} selected{% endif %}>
-              {{ opt.account.account_number }} — {{ opt.account.kind.label() }} (${{ opt.account.balance }})
+              {{ opt.account.account_number }} - {{ opt.account.kind.label() }} (${{ opt.account.balance }})
             </option>
           {% endfor %}
         </select>

@@ -2,9 +2,9 @@
 //! `RequireRole` middleware for protecting whole scopes.
 //!
 //! What the Platform Lead publishes:
-//! - [`CurrentUser`] — drop into any handler signature to require a logged-in user.
-//! - [`RequireRole`] — `.wrap(RequireRole(Role::Admin))` on a scope to enforce a role.
-//! - [`session::login`] / [`session::logout`] — for the Auth module to flip session state.
+//! - [`CurrentUser`] - drop into any handler signature to require a logged-in user.
+//! - [`RequireRole`] - `.wrap(RequireRole(Role::Admin))` on a scope to enforce a role.
+//! - [`session::login`] / [`session::logout`] - for the Auth module to flip session state.
 //!
 //! Auth module owner uses `session::login(&session, SessionUser { ... })` after
 //! verifying credentials, and `session::logout(&session)` on logout.
@@ -26,7 +26,7 @@ use crate::models::user::Role;
 /// Session storage key. Kept private so nobody outside this module writes it directly.
 const SESSION_KEY: &str = "user";
 
-/// What we store in the session cookie. Kept minimal — anything else should be
+/// What we store in the session cookie. Kept minimal - anything else should be
 /// fetched from the DB via the user id.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct SessionUser {
@@ -38,10 +38,6 @@ pub struct SessionUser {
 }
 
 /// Extractor: drop into any handler signature to require a logged-in user.
-///
-/// ```ignore
-/// async fn dashboard(user: CurrentUser) -> Result<HttpResponse, AppError> { ... }
-/// ```
 ///
 /// If the session cookie is missing or invalid, the handler short-circuits with
 /// `AppError::Unauthorized`, which the global error mapper turns into a redirect
@@ -98,17 +94,9 @@ pub mod session {
 
 /// Wrap a scope with `RequireRole(Role::Admin)` to enforce role-based access.
 ///
-/// `Role::Admin` is treated as a superuser — admins pass any `RequireRole` check.
+/// `Role::Admin` is treated as a superuser - admins pass any `RequireRole` check.
 /// Anonymous visitors are redirected to `/login`; logged-in users without the role
 /// get a 403.
-///
-/// ```ignore
-/// cfg.service(
-///     web::scope("/admin")
-///         .wrap(RequireRole(Role::Admin))
-///         .route("/dashboard", web::get().to(handlers::admin::dashboard)),
-/// );
-/// ```
 pub struct RequireRole(pub Role);
 
 impl<S, B> Transform<S, ServiceRequest> for RequireRole
@@ -184,13 +172,13 @@ where
 
 /// Global middleware wrapped around the whole app. Three jobs:
 ///
-/// 1. **Activity trail** — logs every authenticated request (method, path,
+/// 1. **Activity trail** - logs every authenticated request (method, path,
 ///    user id), so GET/POST/PUT/DELETE traffic is traceable per user.
-/// 2. **Inactivity TTL** — 5 minutes, measured against DATABASE time via
+/// 2. **Inactivity TTL** - 5 minutes, measured against DATABASE time via
 ///    `users.last_activity_at`, so it can't be bypassed by tampering with
 ///    browser cookies. Expired sessions are purged and redirected to
 ///    `/login?expired=1` on their next request, whatever it was.
-/// 3. **Mandatory Telegram link** — when Telegram OTP is configured,
+/// 3. **Mandatory Telegram link** - when Telegram OTP is configured,
 ///    customers are routed to `/settings/telegram` and nowhere else until
 ///    their account is linked (codes and account updates arrive there).
 pub struct ActivityGuard;
@@ -267,6 +255,18 @@ where
                     }
                     let _ = sqlx::query(
                         r#"UPDATE users SET last_activity_at = now() WHERE id = $1"#,
+                    )
+                    .bind(u.id)
+                    .execute(&db)
+                    .await;
+
+                    // Apply a matured 24h bot-scheduled unlink (lazy, cheap:
+                    // a single-row no-op unless one is actually due).
+                    let _ = sqlx::query(
+                        r#"
+                        UPDATE users SET telegram_chat_id = NULL, telegram_unlink_at = NULL
+                        WHERE id = $1 AND telegram_unlink_at IS NOT NULL AND telegram_unlink_at <= now()
+                        "#,
                     )
                     .bind(u.id)
                     .execute(&db)

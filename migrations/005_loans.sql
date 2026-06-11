@@ -20,6 +20,9 @@ CREATE TABLE loans (
     status          loan_status     NOT NULL DEFAULT 'pending',
     -- Where the principal lands when the loan is fully approved.
     disbursement_account_id BIGINT  REFERENCES accounts(id) ON DELETE SET NULL,
+    -- Monthly repayment cadence: set to approval + 1 month, advanced by a
+    -- month after every repayment, cleared when paid off.
+    next_payment_due TIMESTAMPTZ,
     created_at      TIMESTAMPTZ     NOT NULL DEFAULT now(),
     decided_at      TIMESTAMPTZ,
 

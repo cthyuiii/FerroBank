@@ -69,8 +69,8 @@
   <section class="mt-6 p-5 rounded-lg border border-blue-200 bg-blue-50">
     <h2 class="font-semibold text-stone-900">Review this application</h2>
     <p class="mt-1 text-sm text-stone-700">
-      A loan needs <strong>both</strong> a teller approval and an admin approval —
-      two different people — before it is granted.
+      A loan needs <strong>both</strong> a teller approval and an admin approval -
+      two different people - before it is granted.
     </p>
 
     <div class="mt-3 flex flex-wrap gap-2 text-xs">
@@ -102,7 +102,7 @@
           </button>
         </form>
       {% else %}
-        <p class="text-sm text-stone-600">You have already recorded your approval — waiting on the other role.</p>
+        <p class="text-sm text-stone-600">You have already recorded your approval - waiting on the other role.</p>
       {% endif %}
     </div>
   </section>
@@ -181,4 +181,23 @@
     {% endif %}
   </div>
 </section>
+{% if loan.status == LoanStatus::Pending %}
+<!-- Auto-refresh: the page updates itself when the dual approval completes
+     (or the application is declined / expires). -->
+<script>
+  (function () {
+    var timer = setInterval(function () {
+      fetch('/loans/{{ loan.id }}/status', { credentials: 'same-origin' })
+        .then(function (r) { return r.json(); })
+        .then(function (s) {
+          if (s && s.status && s.status !== 'Pending') {
+            clearInterval(timer);
+            location.reload();
+          }
+        })
+        .catch(function () {});
+    }, 4000);
+  })();
+</script>
+{% endif %}
 {% endblock %}

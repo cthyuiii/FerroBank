@@ -16,6 +16,15 @@ classDiagram
         +DateTime created_at
         +given_name() String
     }
+    class LoginSession {
+        +i64 id
+        +i64 user_id
+        +String browser
+        +Option~String~ ip
+        +bool is_new_device
+        +bool is_new_network
+        +DateTime created_at
+    }
     class Account {
         +i64 id
         +i64 user_id
@@ -26,6 +35,15 @@ classDiagram
         +Decimal transfer_limit
         +i32 limit_hold_seconds
         +DateTime created_at
+    }
+    class AdjustmentRequest {
+        +i64 id
+        +i64 account_id
+        +Decimal delta
+        +i64 requested_by
+        +Role requested_role
+        +Option~i64~ approved_by
+        +Option~DateTime~ approved_at
     }
     class LimitChange {
         +i64 id
@@ -62,6 +80,7 @@ classDiagram
         +i32 term_months
         +LoanStatus status
         +Option~i64~ disbursement_account_id
+        +Option~DateTime~ next_payment_due
         +DateTime created_at
         +rate_pct() String
     }
@@ -131,12 +150,14 @@ classDiagram
         Rejected
     }
 
+    User "1" --> "0..*" LoginSession : signs in
     User "1" --> "0..*" Account : owns
     User "1" --> "0..*" Loan : borrows
     User "1" --> "0..*" ActionOtp : pending actions
     User "1" --> "0..*" Notification : receives
     User "1" --> "0..*" AuditEntry : acts in
     Account "1" --> "0..*" LimitChange : limit history
+    Account "1" --> "0..*" AdjustmentRequest : dual-control edits
     Account "1" --> "0..*" Transfer : sends or receives
     Account "0..1" <-- Loan : disburses to
     Transfer "1" --> "0..1" TransferReview : reviewed by

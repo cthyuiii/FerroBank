@@ -61,7 +61,7 @@ async fn main() -> anyhow::Result<()> {
     };
     match &telegram_bot {
         Some(bot) => tracing::info!(bot = %bot, "telegram OTP delivery enabled"),
-        None => tracing::info!("telegram OTP not configured — codes shown on screen"),
+        None => tracing::info!("telegram OTP not configured - codes shown on screen"),
     }
 
     // 4. Shared application state
@@ -74,7 +74,7 @@ async fn main() -> anyhow::Result<()> {
     // ── Service wiring ───────────────────────────────────────────────────
     // Each module owner provides `pub struct PgXxxService` and the matching
     // `impl XxxService for PgXxxService`. The Platform Lead just instantiates
-    // them here once — there are no per-request constructors anywhere.
+    // them here once - there are no per-request constructors anywhere.
     //
     // Teammates: do NOT add new lines to main.rs when you fill in your service.
     // Just implement the `new(...)` constructor with the signature shown.
@@ -89,7 +89,8 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let auth_service: Arc<dyn AuthService> = Arc::new(PgAuthService::new(pool.clone()));
-    let account_service: Arc<dyn AccountService> = Arc::new(PgAccountService::new(pool.clone()));
+    let account_service: Arc<dyn AccountService> =
+        Arc::new(PgAccountService::new(pool.clone(), otp_channel.clone()));
     let audit_service: Arc<dyn AuditService> = Arc::new(PgAuditService::new(pool.clone()));
     let transfer_service: Arc<dyn TransferService> = Arc::new(PgTransferService::new(
         pool.clone(),
@@ -118,9 +119,17 @@ async fn main() -> anyhow::Result<()> {
     let admin_data = web::Data::from(admin_service);
     let audit_data = web::Data::from(audit_service);
     let action_otp_data = web::Data::from(action_otp_service);
+    let otp_channel_data = web::Data::from(otp_channel.clone());
 
     // ── HTTP server ──────────────────────────────────────────────────────
-    let session_key = Key::from(config.session_secret.as_bytes());
+    // Derive the cookie key from the secret PLUS a per-boot nonce: restarting
+    // the server invalidates every existing session, so nobody stays signed
+    // in across a shutdown.
+    let session_key = {
+        let mut material = config.session_secret.clone().into_bytes();
+        material.extend_from_slice(uuid::Uuid::new_v4().as_bytes());
+        Key::derive_from(&material)
+    };
     let bind_host = config.app_host.clone();
     let bind_port = config.app_port;
 
@@ -136,6 +145,7 @@ async fn main() -> anyhow::Result<()> {
             .app_data(admin_data.clone())
             .app_data(audit_data.clone())
             .app_data(action_otp_data.clone())
+            .app_data(otp_channel_data.clone())
             .wrap(TracingLogger::default())
             // Runs after the session middleware: activity trail, 5-minute
             // inactivity TTL (database time), mandatory Telegram linking.
@@ -159,7 +169,7 @@ async fn main() -> anyhow::Result<()> {
     // whole-bank state snapshot to the audit log.
     // Use a dedicated connection: the shared pool's connections lived on the
     // (now stopped) worker runtimes, so acquiring from it can time out here.
-    tracing::info!("server stopped — writing shutdown snapshot to audit_log");
+    tracing::info!("server stopped - writing shutdown snapshot to audit_log");
     match sqlx::postgres::PgConnection::connect(&config.database_url).await {
         Ok(mut conn) => {
             if let Err(e) =

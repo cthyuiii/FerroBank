@@ -1,4 +1,4 @@
-//! Admin service — owned by the Platform Lead (Member 1).
+//! Admin service - owned by the Platform Lead (Member 1).
 //!
 //! Composes read-only data from every other module into the dashboard view-model.
 //! Holds Arcs of the other service traits so it's testable with mocks.
@@ -20,11 +20,8 @@ use crate::services::loan_service::LoanService;
 
 /// Threshold (dollars) at or above which a transfer is treated as noteworthy.
 const LARGE_TRANSFER_THRESHOLD: i64 = 10_000;
-/// Amounts in `[STRUCTURING_FLOOR, LARGE_TRANSFER_THRESHOLD)` look like attempts
-/// to stay *just under* the reporting threshold — a classic structuring signal.
-const STRUCTURING_FLOOR: i64 = 9_000;
 
-/// One row of the admin "all accounts" table — account joined to its owner.
+/// One row of the admin "all accounts" table - account joined to its owner.
 #[derive(Debug, Clone, FromRow)]
 pub struct AdminAccountRow {
     pub id: i64,
@@ -38,7 +35,7 @@ pub struct AdminAccountRow {
     pub owner_email: String,
 }
 
-/// One row of the admin "all transfers" table — transfer joined to both owners.
+/// One row of the admin "all transfers" table - transfer joined to both owners.
 #[derive(Debug, Clone, FromRow)]
 pub struct AdminTransferRow {
     pub id: i64,
@@ -65,16 +62,13 @@ impl AdminTransferRow {
             return Some(reason.clone());
         }
         if self.amount >= Decimal::from(LARGE_TRANSFER_THRESHOLD) {
-            return Some("Large transfer (≥ $10,000)".to_string());
-        }
-        if self.amount >= Decimal::from(STRUCTURING_FLOOR) {
-            return Some("Just under $10,000 (possible structuring)".to_string());
+            return Some("Large transfer (>= $10,000)".to_string());
         }
         None
     }
 }
 
-/// One row of the admin users picker — used to open an account on someone's behalf.
+/// One row of the admin users picker - used to open an account on someone's behalf.
 #[derive(Debug, Clone, FromRow)]
 pub struct AdminUserRow {
     pub id: i64,
@@ -145,13 +139,17 @@ pub trait AdminService: Send + Sync {
         from: Option<NaiveDate>,
         to: Option<NaiveDate>,
     ) -> Result<Vec<AdminTransferRow>, AppError>;
-    /// Customers only — accounts may only be opened for customers, so the
+    /// Customers only - accounts may only be opened for customers, so the
     /// "open an account" picker must not offer staff users.
     async fn customers(&self) -> Result<Vec<AdminUserRow>, AppError>;
+
+    /// Every transfer touching any of one user's accounts, for the per-user
+    /// activity view.
+    async fn transfers_for_user(&self, user_id: i64) -> Result<Vec<AdminTransferRow>, AppError>;
 }
 
 pub struct PgAdminService {
-    // Private state — consumers use the `AdminService` trait. The dependent
+    // Private state - consumers use the `AdminService` trait. The dependent
     // services are injected after construction via `with_services` (a builder),
     // because `PgAdminService` is built in `main.rs` before they exist.
     db: PgPool,
@@ -212,10 +210,11 @@ impl PgAdminService {
 
     /// Rule-based fraud signals, with the reason computed in SQL so aggregate
     /// rules (velocity) can be explained alongside per-row ones. Rules:
-    ///   1. any rejected transfer,
-    ///   2. large transfer (≥ $10,000),
-    ///   3. structuring — amount just under the threshold (≥ $9,000),
-    ///   4. velocity — the source account made 4+ transfers in the prior hour.
+    ///   1. rejected transfers (except insufficient funds - that's pre-checked
+    ///      before anything is posted, so it isn't a fraud signal),
+    ///   2. anything currently on hold (with its stored reason),
+    ///   3. large transfers (>= $10,000),
+    ///   4. velocity - the source account made 4+ transfers in the prior hour.
     async fn flagged_transfers_detailed(&self) -> Result<Vec<FlaggedTransfer>, AppError> {
         let rows = sqlx::query_as::<_, FlaggedTransfer>(
             r#"
@@ -224,12 +223,12 @@ impl PgAdminService {
                    fu.full_name AS from_owner, tu.full_name AS to_owner,
                    t.amount, t.status,
                    CASE
+                     WHEN t.status = 'on_hold'
+                          THEN COALESCE(t.status_reason, 'On hold for review')
                      WHEN t.status = 'rejected'
                           THEN COALESCE(t.status_reason, 'Rejected transfer')
                      WHEN t.amount >= $1
                           THEN 'Large transfer (>= $10,000)'
-                     WHEN t.amount >= $2
-                          THEN 'Just under $10,000 (possible structuring)'
                      ELSE 'High velocity: 4+ transfers from this account within 1 hour'
                    END AS reason,
                    t.created_at
@@ -238,8 +237,10 @@ impl PgAdminService {
             JOIN accounts ta ON ta.id = t.to_account_id
             JOIN users    fu ON fu.id = fa.user_id
             JOIN users    tu ON tu.id = ta.user_id
-            WHERE t.status = 'rejected'
-               OR t.amount >= $2
+            WHERE (t.status = 'rejected'
+                   AND (t.status_reason IS NULL OR t.status_reason NOT LIKE 'insufficient funds%'))
+               OR t.status = 'on_hold'
+               OR t.amount >= $1
                OR (
                     SELECT COUNT(*) FROM transfers v
                     WHERE v.from_account_id = t.from_account_id
@@ -251,7 +252,6 @@ impl PgAdminService {
             "#,
         )
         .bind(Decimal::from(LARGE_TRANSFER_THRESHOLD))
-        .bind(Decimal::from(STRUCTURING_FLOOR))
         .fetch_all(&self.db)
         .await?;
         Ok(rows)
@@ -277,7 +277,7 @@ impl PgAdminService {
 #[async_trait]
 impl AdminService for PgAdminService {
     async fn snapshot(&self) -> Result<DashboardSnapshot, AppError> {
-        // Use cheap defaults if injection hasn't happened yet — keeps the
+        // Use cheap defaults if injection hasn't happened yet - keeps the
         // dashboard renderable during scaffolding.
         let active_accounts = match &self.accounts {
             Some(a) => a.count_active().await?,
@@ -354,6 +354,30 @@ impl AdminService for PgAdminService {
         )
         .bind(from)
         .bind(to)
+        .fetch_all(&self.db)
+        .await?;
+        Ok(rows)
+    }
+
+    async fn transfers_for_user(&self, user_id: i64) -> Result<Vec<AdminTransferRow>, AppError> {
+        let rows = sqlx::query_as::<_, AdminTransferRow>(
+            r#"
+            SELECT t.id, t.from_account_id, t.to_account_id,
+                   fa.user_id AS from_user_id, ta.user_id AS to_user_id,
+                   fa.account_number AS from_number, ta.account_number AS to_number,
+                   fu.full_name AS from_owner, tu.full_name AS to_owner,
+                   t.amount, t.status, t.note, t.status_reason, t.created_at
+            FROM transfers t
+            JOIN accounts fa ON fa.id = t.from_account_id
+            JOIN accounts ta ON ta.id = t.to_account_id
+            JOIN users    fu ON fu.id = fa.user_id
+            JOIN users    tu ON tu.id = ta.user_id
+            WHERE fa.user_id = $1 OR ta.user_id = $1
+            ORDER BY t.created_at DESC
+            LIMIT 200
+            "#,
+        )
+        .bind(user_id)
         .fetch_all(&self.db)
         .await?;
         Ok(rows)

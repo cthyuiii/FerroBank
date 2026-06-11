@@ -1,165 +1,192 @@
-# FerroBank — System & Workflow Flow Diagrams
+# FerroBank - System & Workflow Flow Diagrams
 
-Sequence/flow diagrams for every demonstrable scenario, core workflows first,
-then the security and verification features built on top of them.
-Render with any Mermaid viewer (GitHub, VS Code + Mermaid extension,
-<https://mermaid.live>) — handy for the report, slides, and the demo recording.
+Sequence diagrams for every demonstrable scenario. Render with any Mermaid
+viewer (GitHub, VS Code + Mermaid extension, <https://mermaid.live>) - handy
+for the report, slides, and the demo recording.
 
 Actors used throughout: **User** (person), **Browser**, **Actix** (middleware +
-handler), **Service** (business logic), **PostgreSQL**, plus **Telegram** for
-the OTP/notification delivery channel.
+handler), **Service** (business logic), **PostgreSQL**, **Telegram** (OTP and
+notification delivery).
 
 ---
 
-## 0. Tech stack — how the systems talk to each other
+## 0. Tech stack - how the systems talk to each other
 
 ```mermaid
 flowchart LR
     subgraph Client
-        U[User] --> B["Browser<br/>(SSR HTML + Tailwind CDN + HTMX)"]
+        U[User] --> B["Browser<br/>SSR HTML + Tailwind CDN + HTMX<br/>toast and status polling"]
     end
 
     subgraph Server["Actix Web (Rust)"]
-        MW["Middleware<br/>session cookie · CurrentUser · RequireRole · tracing"]
+        MW["Middleware<br/>session cookie · ActivityGuard<br/>TTL + activity trail + link enforcement · RequireRole"]
         H["Handlers (thin)<br/>parse forms · pick templates"]
-        SV["Service traits (thick)<br/>Auth · Account · Transfer · Loan · Audit · Admin<br/>Arc&lt;dyn Trait&gt; — OOP polymorphism"]
-        T["Askama templates<br/>(compile-time checked)"]
+        SV["Service traits (thick)<br/>Auth · Account · Transfer · Loan · ActionOtp · Audit · Admin<br/>Arc&lt;dyn Trait&gt; - OOP polymorphism"]
+        T["Askama templates<br/>compile-time checked"]
     end
 
     subgraph Data["PostgreSQL 16"]
-        DB[("users · accounts · transfers<br/>loans · loan_approvals · repayments<br/>action_otps · audit_log")]
+        DB[("users · login_sessions · accounts<br/>limit_changes · adjustment_requests<br/>transfers · transfer_reviews · action_otps<br/>loans · loan_approvals · repayments<br/>audit_log · notifications")]
     end
 
-    EXT["Telegram Bot API<br/>(OTP delivery + /unlink commands)"]
+    EXT["Telegram Bot API<br/>OTP + notifications + /unlink commands"]
 
     B -- "HTTP GET/POST (forms)" --> MW --> H --> SV
-    SV -- "SQLx: transactions,<br/>SELECT … FOR UPDATE" --> DB
+    SV -- "SQLx transactions,<br/>SELECT FOR UPDATE" --> DB
     SV -. "audit every state change" .-> DB
     H --> T -- "HTML response" --> B
     SV -. "HTTPS sendMessage" .-> EXT
-    SEED["seed binary<br/>(cargo run --bin seed)"] -- "idempotent demo data" --> DB
+    EXT -. "getUpdates poller<br/>links accounts, /unlink" .-> SV
+    SEED["seed binary"] -- "idempotent demo data" --> DB
     MAIN["main.rs"] -- "migrations on startup ·<br/>system.snapshot on shutdown" --> DB
 ```
 
-Request path in one line: **Browser → session middleware → role guard →
-handler → service trait → SQLx transaction → PostgreSQL → Askama template →
-HTML back to the browser.** No JSON API, no client-side framework — every page
-is server-side rendered; HTMX progressively enhances form posts.
+Request path in one line: **Browser → session middleware → ActivityGuard →
+RequireRole → handler (thin) → service trait (thick) → SQLx transaction →
+PostgreSQL → Askama template → HTML back.** Pages are fully server-side
+rendered; the only JSON endpoints are the small polls (notifications, link
+status, per-item status).
 
 ---
 
-## 1. Registration & login (sessions)
+## 1. Registration & login
 
 ```mermaid
 sequenceDiagram
     actor U as User
-    participant B as Browser
-    participant A as Actix auth handler
+    participant A as Actix
     participant S as AuthService
     participant P as PostgreSQL
 
-    U->>B: fill /register form
-    B->>A: POST /register (email, first/middle/last name, password)
-    A->>A: validator: email format, names, password ≥ 8 chars
-    A->>S: register(NewUser{role: Customer})
-    S->>S: argon2id hash (unique salt)
-    S->>P: INSERT INTO users … (UNIQUE email)
-    P-->>S: user row
-    S-->>A: User
-    A->>A: session::login() → signed cookie (id, email, role)
-    A-->>B: 302 → /accounts (role-based landing)<br/>home page greets "Hello, {first name}"
-
-    Note over B,P: Login: same shape — verify argon2 hash,<br/>identical error for wrong email vs wrong password (no user enumeration)
+    U->>A: POST /register with first, middle, last name, NRIC, email, password
+    A->>A: validate field lengths, email shape, password >= 8 chars
+    A->>S: register NewUser
+    S->>S: argon2id hash with unique salt
+    S->>P: INSERT users, UNIQUE email
+    A-->>U: redirect /login?registered=1, no auto-login
+    U->>A: POST /login
+    S->>P: verify hash, reset last_activity_at
+    alt first-seen device or network for a linked customer
+        A-->>U: step-up page, a one-time code goes to Telegram, NO session yet
+        U->>A: POST /login/stepup with the code, wrong codes retry inline
+        Note over U,A: 3 wrong codes cancel the attempt and BLOCK that browser + network from this account for 24 hours, even with the right password
+    end
+    A-->>U: session cookie + role-based landing, unlinked customers go to Telegram linking
+    Note over U,P: identical error for wrong email vs wrong password, no user enumeration. Known origins stay password-only - the step-up fires only on new origins.
 ```
 
-## 2. Account opening with maker–checker approval
+## 2. Account opening with OTP and maker-checker approval
 
 ```mermaid
 sequenceDiagram
     actor C as Customer
-    actor T as Teller/Admin
+    actor T as Teller or Admin
     participant A as Actix
-    participant S as AccountService
     participant P as PostgreSQL
 
-    C->>A: POST /accounts/new (savings | checking)
-    A->>A: OTP gate: park request in action_otps,<br/>send code (Telegram or on-screen)
-    C->>A: POST /accounts/new/confirm (code)
-    A->>A: verify: owner-bound · single-use · 10-min expiry
-    A->>S: open_account(user, kind, approved=false)
-    S->>P: INSERT account status='pending'<br/>(trigger: owner must be a customer)
-    P-->>C: account visible, but PENDING — cannot transact
-
-    T->>A: GET /staff/accounts (RequireRole(Teller))
-    A-->>T: pending-accounts queue
-    T->>A: POST /staff/accounts/{id}/approve
-    A->>S: approve_account(id)
-    S->>P: UPDATE … SET status='active' WHERE status='pending'
-    A->>P: audit_log: account.approved (actor = teller)
-    P-->>C: account ACTIVE — can now send/receive money
+    C->>A: POST /accounts/new, savings or checking
+    A->>P: park the request in action_otps, send code via Telegram
+    C->>A: POST /accounts/new/confirm with the code
+    A->>A: verify, owner-bound, single-use, 10-min expiry, wrong code retries inline
+    A->>P: INSERT account status pending, trigger blocks non-customer owners
+    Note over C,P: the pending page polls /accounts/id/status and refreshes itself
+    T->>A: POST /staff/accounts/id/approve
+    A->>P: UPDATE to active, audit, notification + Telegram to the owner
 ```
 
-## 3. Money transfer — two-step with OTP (core engine)
+## 3. Money transfer - the core engine
 
 ```mermaid
 sequenceDiagram
     actor U as Customer
-    participant B as Browser
-    participant A as Actix transfers handler
+    participant A as Actix
     participant S as TransferService
     participant P as PostgreSQL
 
-    U->>B: transfer form (from, to acct number, amount)
-    B->>A: POST /transfers/new
-    A->>A: parse Decimal · sender must OWN from-account
-    A->>S: create(actor, from, to, amount)
-    S->>P: recipient must belong to a DIFFERENT user<br/>(no self-transfers; DB trigger backs this up)
-    S->>P: apply matured limit changes · enforce per-transfer limit
-    S->>S: Mutex rate-limit (≤5/min per account)
-    S->>S: generate 6-digit OTP → argon2 hash
-    S->>P: INSERT transfer status='pending' + otp_hash
-    S->>P: audit_log: transfer.created
-    S-->>B: confirm page (code goes to Telegram — never on screen when linked)
-
-    U->>B: types OTP
-    B->>A: POST /transfers/confirm
-    A->>S: confirm(actor, transfer_id, otp)
-    S->>P: BEGIN
-    S->>P: SELECT transfer FOR UPDATE (must be 'pending')
-    S->>P: actor must own the source account (else Forbidden)
-    S->>S: verify OTP against argon2 hash (3 strikes → rejected · 10-min TTL)
-    S->>P: SELECT both accounts FOR UPDATE — ascending id (no deadlock)
-    S->>S: re-check under lock: active? balance ≥ amount?
-    alt all checks pass
-        S->>P: debit · credit · status='completed' (one txn)
-        S->>P: COMMIT
-        S->>P: audit_log: transfer.completed
-    else any check fails
-        S->>P: status='rejected' + human-readable reason · COMMIT
-        S->>P: audit_log: transfer.rejected
+    U->>A: POST /transfers/new
+    A->>A: sender must own the source account
+    A->>S: create
+    S->>P: recipient must belong to a DIFFERENT user, DB trigger backs this up
+    S->>P: insufficient funds pre-check FIRST, records a rejected row, no OTP issued
+    S->>P: apply matured limit changes, then enforce the per-transfer limit
+    S->>S: Mutex rate limit, 5 per minute per account
+    S->>P: INSERT pending + argon2 OTP hash, code goes to Telegram
+    U->>A: POST /transfers/confirm
+    S->>P: BEGIN, lock transfer FOR UPDATE, must be pending, within 10 minutes
+    S->>S: actor must own the source account, verify OTP, 3 strikes rejects
+    S->>P: lock both accounts FOR UPDATE in ascending id order, no deadlock
+    S->>S: re-check under lock, active status and balance
+    alt all checks pass and no fraud rule matches
+        S->>P: debit, credit, status completed, one transaction, COMMIT
+        S->>P: named notifications both ways + Telegram
+    else fraud rule matches
+        S->>P: status on_hold with the reason, money untouched
+    else a check fails
+        S->>P: status rejected with a human-readable reason
     end
-    A-->>B: 302 → /transfers (history shows outcome + reason)
 ```
 
-## 4. Concurrency: why simultaneous transfers can't corrupt balances
+## 4. Concurrency - why simultaneous transfers cannot corrupt balances
 
 ```mermaid
 sequenceDiagram
-    participant T1 as Transfer task 1 of 10 dollars
-    participant T2 as Transfer task 2 of 10 dollars
-    participant P as PostgreSQL with balance 15
+    participant T1 as Transfer task one
+    participant T2 as Transfer task two
+    participant P as PostgreSQL holding a 15 dollar balance
 
-    par simultaneous confirms
-        T1->>P: SELECT … FOR UPDATE  (acquires row lock)
-        T2->>P: SELECT … FOR UPDATE  (BLOCKS, waits for T1)
+    par simultaneous confirms of 10 dollars each
+        T1->>P: SELECT FOR UPDATE, acquires the row lock
+        T2->>P: SELECT FOR UPDATE, BLOCKS waiting for T1
     end
-    T1->>P: balance 15 ≥ 10 ✓ → debit → COMMIT (balance: $5)
-    Note over T2,P: lock released — T2 now reads the REAL balance
-    T2->>P: balance 5 ≥ 10 ✗ → status='rejected' (insufficient funds)
-    Note over T1,T2: Proven by tests/transfer_concurrency.rs:<br/>no overdraft, no lost money, no double spend
+    T1->>P: 15 >= 10, debit, COMMIT, balance now 5
+    Note over T2,P: lock released, T2 reads the REAL balance
+    T2->>P: 5 >= 10 fails, status rejected, insufficient funds
+    Note over T1,T2: proven by tests/transfer_concurrency.rs and the admin Race demo page
 ```
 
-## 5. Loan lifecycle — dual approval (four-eyes) + repayment
+## 5. Fraud hold, identity review, hijack defense
+
+```mermaid
+sequenceDiagram
+    actor U as Customer
+    actor ST as Teller or Admin
+    participant S as TransferService
+    participant P as PostgreSQL
+
+    U->>S: confirm on a transfer matching a rule
+    Note over S: rules - 10k+ large, structuring when a 5k+ balance is emptied to within 49 dollars under the limit, draining over half of a 5k+ balance, 4+ transfers within 1 hour
+    S->>P: status on_hold, money NOT moved, named Telegram + toast to the sender
+    U->>S: review page, submit purpose and NRIC, page polls status
+    ST->>S: /staff/review queue shows the claim beside the NRIC on file
+    alt identity verified and purpose plausible
+        ST->>S: release, locked re-checks, money moves, both parties told with names
+    else suspicious
+        ST->>S: deny with a reason, sender told
+    end
+    Note over S,P: separately - 3 overdraft attempts in 24h freezes the account automatically and messages the owner
+```
+
+## 6. Transfer limit change with hold window
+
+```mermaid
+sequenceDiagram
+    actor U as Customer
+    participant A as Actix
+    participant S as AccountService
+    participant P as PostgreSQL
+
+    U->>A: request a limit change on the account page
+    A-->>U: themed consent popup, increases are held before applying
+    U->>A: confirm, then a one-time code page, OTP verified
+    alt new limit at or below current
+        S->>P: apply immediately, owner notified
+    else increase
+        S->>P: INSERT limit_changes, effective_at = now + hold window
+        Note over S,P: 12h default, Alice seeded to 10s for the demo. The OLD limit applies until maturity. Matured rows are promoted lazily on every account read and before every transfer, and the page shows the effective moment in the viewer's local time.
+    end
+```
+
+## 7. Loan lifecycle - dual approval, disbursement, due dates
 
 ```mermaid
 sequenceDiagram
@@ -169,120 +196,57 @@ sequenceDiagram
     participant S as LoanService
     participant P as PostgreSQL
 
-    C->>S: apply(principal, rate, term)
-    Note over C,S: OTP gate first: application parked in action_otps,<br/>submitted only after the code verifies
-    S->>P: INSERT loan status='pending'
-
-    T->>S: approve(loan, teller)
-    S->>P: INSERT loan_approvals (loan, role='teller')<br/>UNIQUE(loan_id, role)
-    Note over S,P: still pending — only 1 of 2 slots filled
-
-    AD->>S: approve(loan, admin)
-    S->>P: INSERT loan_approvals (loan, role='admin')
-    S->>P: both slots filled → UPDATE loans SET status='approved'
-
-    C->>S: record_repayment(loan, amount, funding account)
-    S->>P: BEGIN · lock loan + funding account FOR UPDATE
-    S->>S: account active? balance ≥ amount?
-    S->>P: debit account · INSERT repayment · recompute outstanding
-    alt outstanding ≤ 0
-        S->>P: status='paid_off' · COMMIT
+    C->>S: apply with principal, rate, term and a payout account, OTP confirmed
+    S->>P: INSERT loan pending, applications expire after 7 days
+    T->>S: teller approval, UNIQUE loan and role
+    AD->>S: admin approval completes the pair
+    S->>P: credit the principal to the payout account in the same transaction
+    S->>P: next_payment_due = now + 1 month
+    S-->>C: toast with amount and due date, Telegram says open the app to check
+    C->>S: repayments debit a chosen funding account under lock
+    alt outstanding reaches zero
+        S->>P: status paid_off, due date cleared
     else still owing
-        S->>P: status='active' · COMMIT
+        S->>P: status active, due date advances a month, customer told the next date
     end
 ```
 
-## 6. Graceful shutdown — system snapshot to the audit log
+## 8. Dual-control balance adjustment
 
 ```mermaid
 sequenceDiagram
-    participant OS as OS signal Ctrl-C or SIGTERM
-    participant M as main.rs
-    participant AX as Actix HttpServer
-    participant P as PostgreSQL
-
-    OS->>AX: SIGINT / SIGTERM
-    AX->>AX: graceful shutdown — finish in-flight requests
-    AX-->>M: run() returns
-    M->>P: SELECT counts + SUM(balances) across the bank
-    M->>P: INSERT audit_log event='system.snapshot' (JSON payload)
-    M-->>OS: exit 0
-    Note over M,P: Hard crash (kill -9 / power loss): nothing can run —<br/>but committed transactions are already durable (Postgres WAL).<br/>The snapshot is a forensic marker, not a recovery mechanism.
-```
-
----
-
-# Security & verification features
-
-## 7. OTP delivery via Telegram (mandatory for customers)
-
-```mermaid
-sequenceDiagram
-    actor U as Customer
-    participant B as Browser
-    participant A as Actix
-    participant TG as Telegram Bot API
-    participant P as PostgreSQL
-
-    Note over U,P: After registration the customer signs in and is routed to /settings/telegram and nowhere else until linked
-    U->>B: tap "Open Telegram & link my account" (single-use code in deep link)
-    U->>TG: press Start → /start code
-    TG-->>A: getUpdates poll delivers code + chat id
-    A->>P: consume code, store chat id
-    Note over B: the guide page polls /settings/telegram/status every 2s and refreshes itself the moment the link lands
-    B-->>U: "Linked ✓ — codes & account updates arrive in Telegram"
-
-    Note over U,P: Every sensitive action afterwards (transfer, account opening, loan application, profile change) sends its code to Telegram — codes never appear on screen for linked users. Bot commands: /unlink (clears the link in the DB), /help.
-```
-
-## 8. Fraud hold + staff review (NRIC identity check)
-
-```mermaid
-sequenceDiagram
-    actor U as Customer
-    actor ST as Teller or Admin
-    participant S as TransferService
-    participant P as PostgreSQL
-
-    U->>S: confirm(...) on a transfer matching a fraud rule
-    Note over S: rules: ≥$10k large · $9k–10k structuring · drains >50% of a balance >$5k · 4+ transfers within 1 hour · (3 invalid OTP attempts rejects outright)
-    S->>P: status='on_hold' + reason — money NOT moved
-    S-->>U: review page: "this may be illegitimate" → submit purpose + NRIC
-    U->>S: submit_review(purpose, NRIC claim)
-    S->>P: INSERT transfer_reviews
-
-    ST->>S: GET /staff/review — queue shows claim vs NRIC on file
-    alt identity verified, purpose plausible
-        ST->>S: release → locked re-checks → money moves → 'completed'
-    else suspicious
-        ST->>S: deny(reason) → 'rejected'
-    end
-    S->>P: audit_log + notification (+ Telegram message) either way
-
-    Note over S,P: Hijack heuristic: 3+ overdraft attempts from one account in 24h freezes the account automatically.
-```
-
-## 9. Transfer limit change with hold window
-
-```mermaid
-sequenceDiagram
-    actor U as Customer
-    participant B as Browser
+    actor AD as Admin
+    actor T as Teller
     participant S as AccountService
     participant P as PostgreSQL
 
-    U->>B: account page → request limit change
-    B->>U: consent popup: increases are risky → held before applying
-    U->>B: confirm
-    alt new limit ≤ current
-        S->>P: apply immediately (lowering reduces risk)
-    else increase
-        S->>P: INSERT limit_changes, effective_at = now() + hold window
-        Note over S,P: 12h default · Alice's accounts seeded to 10s for the demo. The OLD limit applies until maturity; the transfer engine promotes matured rows lazily before enforcing.
+    AD->>S: adjust balance, responsibility popup acknowledged
+    alt absolute delta at most 1000
+        S->>P: apply immediately under a row lock, audited
+    else larger
+        S->>P: INSERT adjustment_requests, parked
+        T->>S: approve as the OTHER staff role, same person or same role is refused
+        S->>P: locked apply, refuses a negative result, both ids audited
     end
 ```
 
-## 10. Inactivity TTL + activity trail (every request)
+## 9. Profile changes and Telegram linking
+
+```mermaid
+sequenceDiagram
+    actor U as Customer
+    participant A as Actix
+    participant T as Telegram
+    participant P as PostgreSQL
+
+    U->>A: change email or password, or unlink Telegram
+    A->>T: one-time code to the linked chat
+    U->>A: confirm with the code, wrong codes retry inline
+    A->>P: apply the change, audited
+    Note over U,T: bot commands - /start code links, /help lists commands. /unlink is hardened - it schedules the unlink 24h out with warnings on every channel, cancellable only from the website with a password-backed session. The website's own OTP-confirmed unlink stays immediate.
+```
+
+## 10. Sessions, TTLs, and the activity trail
 
 ```mermaid
 sequenceDiagram
@@ -290,32 +254,69 @@ sequenceDiagram
     participant G as ActivityGuard middleware
     participant P as PostgreSQL
 
-    B->>G: any GET/POST/PUT/DELETE with a session
-    G->>G: log user id + method + path (traceable activity)
-    G->>P: last_activity_at older than 5 minutes? (database time)
+    B->>G: any request with a session
+    G->>G: log user id, method, path - the per-user activity trail
+    G->>P: last_activity_at older than 5 minutes on DATABASE time?
     alt expired
-        G->>G: purge session
-        G-->>B: 302 /login?expired=1 — "signed out for inactivity"
+        G-->>B: session purged, redirect /login?expired=1 with the reason shown
     else active
-        G->>P: UPDATE last_activity_at = now()
+        G->>P: UPDATE last_activity_at = now
         G-->>B: request proceeds
     end
-    Note over G,P: TTLs everywhere: sessions 5 min idle · OTPs 10 min · pending transfers 10 min · pending loans 7 days · notifications fire once.
+    Note over B,P: the cookie key mixes in a per-boot nonce, so a server restart logs everyone out. Other TTLs - OTPs and pending transfers 10 minutes, pending loans 7 days, notifications fire exactly once.
 ```
 
-## 11. Notifications (browser toasts + Telegram)
+## 11. Notifications and live status
 
 ```mermaid
 sequenceDiagram
     participant SV as Any service
     participant P as PostgreSQL
-    participant B as Browser (layout.html)
-    participant TG as Telegram
+    participant B as Browser
+    participant T as Telegram
 
-    SV->>P: INSERT notifications (account approved, transfer completed/held/denied, loan approved/declined, account frozen)
-    SV->>TG: sendMessage when the user is linked
-    loop every 8 seconds
-        B->>P: GET /notifications (fetch-and-mark-seen)
-        B-->>B: toast popup per message — fires exactly once
+    SV->>P: INSERT notifications on approvals, transfers, holds, releases, denials, freezes, limit changes, loan decisions
+    SV->>T: mirrored to Telegram when the user is linked
+    loop every 5 seconds and on tab focus
+        B->>P: GET /notifications, fetch-and-mark-seen
+        B-->>B: themed toast per message, fires exactly once
     end
+    loop every 4 seconds on pending pages
+        B->>P: GET status for a held transfer, pending account, or pending loan
+        B-->>B: auto-redirect or refresh the moment staff act
+    end
+```
+
+## 12. Graceful shutdown - system snapshot
+
+```mermaid
+sequenceDiagram
+    participant OS as Ctrl-C or SIGTERM
+    participant M as main.rs
+    participant P as PostgreSQL
+
+    OS->>M: signal, actix finishes in-flight requests
+    M->>P: dedicated connection, counts and totals across the bank
+    M->>P: INSERT audit_log event system.snapshot with the JSON payload
+    Note over M,P: a hard crash cannot run anything, but committed transactions are already durable via the WAL - the snapshot is a forensic marker, not recovery
+```
+
+## 13. Login device tracking
+
+```mermaid
+sequenceDiagram
+    actor U as User
+    participant A as Actix
+    participant P as PostgreSQL
+    participant T as Telegram
+
+    U->>A: POST /login from some browser and network
+    A->>A: classify the User-Agent - Chrome, Safari, Firefox, Edge, Other
+    A->>P: compare against this user's login history
+    A->>P: INSERT login_sessions with browser, IP, first-seen flags
+    alt first-seen browser or first-seen network
+        A->>P: audit auth.login.new_origin + notification
+        A->>T: security alert - new device or network, change your password if not you
+    end
+    Note over A,P: staff see the full history with New device and New network badges on /staff/users/id, beside the user's accounts and transfers - pair with held transfers when investigating takeovers
 ```

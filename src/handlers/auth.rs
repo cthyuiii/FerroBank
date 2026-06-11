@@ -1,4 +1,4 @@
-//! Auth handlers — owned by the Auth module (Member 2).
+//! Auth handlers - owned by the Auth module (Member 2).
 //!
 //! Flow:
 //!   GET  /login     → render login form
@@ -8,7 +8,7 @@
 //!   POST /logout    → purge session, redirect to /
 
 use actix_session::Session;
-use actix_web::{web, HttpResponse, Responder};
+use actix_web::{web, HttpRequest, HttpResponse, Responder};
 use askama::Template;
 use serde::Deserialize;
 use validator::Validate;
@@ -16,18 +16,23 @@ use validator::Validate;
 use crate::errors::AppError;
 use crate::middleware::auth::{session, SessionUser};
 use crate::models::user::{NewUser, Role};
-use crate::services::auth_service::AuthService;
+use crate::services::action_otp_service::ActionOtpService;
+use crate::services::auth_service::{
+    block_origin, login_origin_is_new, origin_blocked, record_login_session, AuthService,
+};
+use crate::services::telegram_service::OtpChannel;
 use crate::state::AppState;
-use crate::view::LayoutCtx;
+use crate::view::{LayoutCtx, OtpConfirmPage};
 
 pub fn routes(cfg: &mut web::ServiceConfig) {
-    // NOTE: register these as plain top-level resources — do NOT wrap them in
+    // NOTE: register these as plain top-level resources - do NOT wrap them in
     // `web::scope("")`. An empty-prefix scope matches *every* request path, and
     // because services are matched in registration order it would swallow the
     // later `/accounts`, `/transfers`, `/loans`, and `/admin` scopes and return
     // 404 for them (e.g. the post-login redirect to `/accounts`).
     cfg.route("/login", web::get().to(login_form))
         .route("/login", web::post().to(login_submit))
+        .route("/login/stepup", web::post().to(login_stepup))
         .route("/register", web::get().to(register_form))
         .route("/register", web::post().to(register_submit))
         .route("/logout", web::post().to(logout));
@@ -83,7 +88,7 @@ struct RegisterForm {
     middle_name: Option<String>,
     #[validate(length(min = 1, max = 40))]
     last_name: String,
-    /// National ID — used by staff to verify identity during fraud reviews.
+    /// National ID - used by staff to verify identity during fraud reviews.
     #[validate(length(min = 5, max = 20, message = "must be 5-20 characters"))]
     nric: String,
     #[validate(length(min = 8, max = 128, message = "must be at least 8 characters"))]
@@ -94,7 +99,7 @@ struct RegisterForm {
 
 async fn login_form(query: web::Query<LoginQuery>) -> Result<HttpResponse, AppError> {
     let notice = if query.registered.is_some() {
-        Some("Account created — please sign in with your new credentials.".to_string())
+        Some("Account created - please sign in with your new credentials.".to_string())
     } else if query.expired.is_some() {
         Some("You were signed out after 5 minutes of inactivity. Please sign in again.".to_string())
     } else {
@@ -104,8 +109,11 @@ async fn login_form(query: web::Query<LoginQuery>) -> Result<HttpResponse, AppEr
 }
 
 async fn login_submit(
+    req: HttpRequest,
     form: web::Form<LoginForm>,
     svc: web::Data<dyn AuthService>,
+    otp_svc: web::Data<dyn ActionOtpService>,
+    otp_channel: web::Data<dyn OtpChannel>,
     state: web::Data<AppState>,
     session: Session,
 ) -> Result<HttpResponse, AppError> {
@@ -123,6 +131,86 @@ async fn login_submit(
         Err(other) => return Err(other),
     };
 
+    let user_agent = req
+        .headers()
+        .get("user-agent")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown")
+        .to_string();
+    let ip = req
+        .connection_info()
+        .realip_remote_addr()
+        .unwrap_or("unknown")
+        .to_string();
+
+    // A blocked origin (3 failed step-up codes) may not sign in at all,
+    // even with the right password, until the block expires.
+    if origin_blocked(&state.db, user.id, &user_agent, &ip).await {
+        return render_login(
+            Some(
+                "Sign-in from this device/network is temporarily blocked after repeated failed verification attempts. Try again later, or sign in from a device you've used before.".into(),
+            ),
+            None,
+            form.email,
+        );
+    }
+
+    // Apply any matured 24h bot-scheduled unlink before checking link state.
+    let _ = sqlx::query(
+        r#"UPDATE users SET telegram_chat_id = NULL, telegram_unlink_at = NULL
+           WHERE id = $1 AND telegram_unlink_at IS NOT NULL AND telegram_unlink_at <= now()"#,
+    )
+    .bind(user.id)
+    .execute(&state.db)
+    .await;
+
+    // ── Risk-based step-up ──────────────────────────────────────────────
+    // Password alone is enough from a known origin. A first-seen browser or
+    // network must ALSO present a one-time code before any session exists.
+    // Only possible for linked customers (first login is exempt by design:
+    // no history yet, and unlinked users have no out-of-band channel).
+    if user.role == Role::Customer && state.telegram_bot.is_some() {
+        let linked: Option<bool> = sqlx::query_scalar::<_, bool>(
+            r#"SELECT telegram_chat_id IS NOT NULL FROM users WHERE id = $1"#,
+        )
+        .bind(user.id)
+        .fetch_optional(&state.db)
+        .await?;
+        if matches!(linked, Some(true))
+            && login_origin_is_new(&state.db, user.id, &user_agent, &ip).await
+        {
+            let challenge = otp_svc
+                .begin(
+                    user.id,
+                    "login.stepup",
+                    serde_json::json!({ "ua": user_agent, "ip": ip }),
+                )
+                .await?;
+            // If Telegram delivery failed we must not lock the user out -
+            // fall through to a normal (but alerted) login instead.
+            if challenge.delivered {
+                let body = OtpConfirmPage {
+                    layout: LayoutCtx::anonymous(),
+                    title: "Verify it's you".into(),
+                    summary: vec![
+                        ("Sign-in from".into(), format!("{ip}")),
+                        ("Why".into(), "first-seen device or network".into()),
+                    ],
+                    action_url: "/login/stepup".into(),
+                    cancel_url: "/login".into(),
+                    action_id: challenge.action_id,
+                    demo_otp: None,
+                    error: None,
+                }
+                .render()
+                .map_err(|e| AppError::Internal(anyhow::anyhow!("stepup template: {e}")))?;
+                return Ok(HttpResponse::Ok()
+                    .content_type("text/html; charset=utf-8")
+                    .body(body));
+            }
+        }
+    }
+
     session::login(
         &session,
         SessionUser {
@@ -132,6 +220,17 @@ async fn login_submit(
             role: user.role,
         },
     )?;
+
+    // Device tracking: browser family + source IP, with first-seen flags
+    // that alert the user and feed the admin's per-user activity view.
+    record_login_session(
+        &state.db,
+        &otp_channel.clone().into_inner(),
+        user.id,
+        &user_agent,
+        &ip,
+    )
+    .await;
 
     // Customers who haven't linked Telegram yet are sent straight to the
     // linking page (the ActivityGuard enforces this on every later request).
@@ -199,7 +298,7 @@ async fn register_submit(
         Err(other) => return Err(other),
     };
 
-    // No auto-login: the user must sign in with their new credentials —
+    // No auto-login: the user must sign in with their new credentials -
     // verifying the password they just set before any session exists.
     tracing::info!(user_id = user.id, "registration complete; fresh sign-in required");
     Ok(redirect("/login?registered=1"))
@@ -208,6 +307,129 @@ async fn register_submit(
 async fn logout(session: Session) -> impl Responder {
     session::logout(&session);
     redirect("/")
+}
+
+// ── Risk-based step-up confirm ───────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct StepupForm {
+    action_id: i64,
+    otp: String,
+}
+
+/// Completes a first-seen-origin login: only after the code verifies does a
+/// session exist. The pending action itself tells us who is signing in.
+async fn login_stepup(
+    form: web::Form<StepupForm>,
+    svc: web::Data<dyn AuthService>,
+    otp_svc: web::Data<dyn ActionOtpService>,
+    otp_channel: web::Data<dyn OtpChannel>,
+    state: web::Data<AppState>,
+    session: Session,
+) -> Result<HttpResponse, AppError> {
+    // Who does this pending step-up belong to?
+    let row: Option<(i64, serde_json::Value)> = sqlx::query_as(
+        r#"
+        SELECT user_id, payload FROM action_otps
+        WHERE id = $1 AND purpose = 'login.stepup' AND consumed_at IS NULL
+        "#,
+    )
+    .bind(form.action_id)
+    .fetch_optional(&state.db)
+    .await?;
+    let Some((user_id, payload)) = row else {
+        return render_login(
+            Some("That verification is no longer valid - please sign in again.".into()),
+            None,
+            String::new(),
+        );
+    };
+
+    match otp_svc
+        .verify(user_id, form.action_id, "login.stepup", &form.otp)
+        .await
+    {
+        Ok(_) => {}
+        // Wrong code: stay on the page and retry the same pending action.
+        Err(AppError::BadRequest(msg)) => {
+            let body = OtpConfirmPage {
+                layout: LayoutCtx::anonymous(),
+                title: "Verify it's you".into(),
+                summary: vec![],
+                action_url: "/login/stepup".into(),
+                cancel_url: "/login".into(),
+                action_id: form.action_id,
+                demo_otp: None,
+                error: Some(msg),
+            }
+            .render()
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("stepup template: {e}")))?;
+            return Ok(HttpResponse::Ok()
+                .content_type("text/html; charset=utf-8")
+                .body(body));
+        }
+        Err(AppError::Conflict(msg)) => {
+            // Third strike: the action is cancelled - block this origin from
+            // signing in to the account for 24 hours and alert the owner.
+            if msg.contains("too many") {
+                let ua = payload["ua"].as_str().unwrap_or("unknown");
+                let ip = payload["ip"].as_str().unwrap_or("unknown");
+                block_origin(
+                    &state.db,
+                    &otp_channel.clone().into_inner(),
+                    user_id,
+                    ua,
+                    ip,
+                    24,
+                )
+                .await;
+                return render_login(
+                    Some("Too many invalid codes - this device/network is now blocked from signing in for 24 hours.".into()),
+                    None,
+                    String::new(),
+                );
+            }
+            return render_login(
+                Some("The verification expired - please sign in again.".into()),
+                None,
+                String::new(),
+            );
+        }
+        Err(other) => return Err(other),
+    }
+
+    let user = svc.find_by_id(user_id).await?;
+    session::login(
+        &session,
+        SessionUser {
+            id: user.id,
+            email: user.email.clone(),
+            name: user.given_name(),
+            role: user.role,
+        },
+    )?;
+
+    // Record the (flagged) session - the new-origin alert still fires, which
+    // is correct: a step-up SUCCEEDED from a new device, the owner should know.
+    let ua = payload["ua"].as_str().unwrap_or("unknown").to_string();
+    let ip = payload["ip"].as_str().unwrap_or("unknown").to_string();
+    record_login_session(
+        &state.db,
+        &otp_channel.clone().into_inner(),
+        user.id,
+        &ua,
+        &ip,
+    )
+    .await;
+    let _ = sqlx::query(
+        r#"INSERT INTO audit_log (actor_user_id, event, payload) VALUES ($1, 'auth.login.stepup_passed', $2)"#,
+    )
+    .bind(user.id)
+    .bind(serde_json::json!({ "ip": ip }))
+    .execute(&state.db)
+    .await;
+
+    Ok(redirect(post_login_destination(user.role)))
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────

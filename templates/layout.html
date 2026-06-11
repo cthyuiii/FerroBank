@@ -112,6 +112,11 @@
     html.dark .bg-blue-50 { background-color: rgba(59,130,246,.12); }
     html.dark .text-blue-700 { color: #60a5fa; }
     html.dark .border-blue-200 { border-color: rgba(59,130,246,.3); }
+
+    html.dark .bg-purple-50 { background-color: rgba(147,51,234,.14); }
+    html.dark .bg-purple-700 { background-color: #7e22ce; }
+    html.dark .text-purple-700 { color: #c084fc; }
+    html.dark .border-purple-200 { border-color: rgba(147,51,234,.4); }
   </style>
   {% block extra_head %}{% endblock %}
 </head>
@@ -122,9 +127,65 @@
     {% block content %}{% endblock %}
   </main>
 
+  <!-- Themed confirmation modal: replaces browser confirm() so popups match
+       the app. Forms opt in with onsubmit="return fbConfirmSubmit(this, 'msg')". -->
+  <div id="fb-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div id="fb-modal-backdrop" class="absolute inset-0" style="background: rgba(28,25,23,.55);"></div>
+    <div class="relative max-w-md w-full p-6 rounded-lg border border-stone-200 bg-white shadow-xl">
+      <div class="flex items-center gap-2">
+        <span class="inline-flex items-center justify-center w-8 h-8 rounded-full bg-amber-50 border border-amber-300 text-amber-800">!</span>
+        <h2 class="text-lg font-semibold text-stone-900">Please confirm</h2>
+      </div>
+      <p id="fb-modal-msg" class="mt-3 text-sm text-stone-600 leading-relaxed whitespace-pre-line"></p>
+      <div class="mt-6 flex items-center justify-end gap-3">
+        <button type="button" id="fb-modal-cancel"
+                class="px-4 py-2 rounded-md border border-stone-300 bg-white text-sm text-stone-700 hover:border-stone-400 transition">
+          Cancel
+        </button>
+        <button type="button" id="fb-modal-ok"
+                class="px-4 py-2 rounded-md bg-amber-700 text-white text-sm font-medium hover:bg-amber-800 transition">
+          Confirm
+        </button>
+      </div>
+    </div>
+  </div>
+  <script>
+    (function () {
+      var pending = null;
+      var modal = document.getElementById('fb-modal');
+      function close() { modal.classList.add('hidden'); pending = null; }
+      window.fbShowModal = function (message, onConfirm) {
+        document.getElementById('fb-modal-msg').textContent = message;
+        pending = onConfirm;
+        modal.classList.remove('hidden');
+      };
+      window.fbConfirmSubmit = function (form, message) {
+        if (form.dataset.fbConfirmed === '1') { form.dataset.fbConfirmed = ''; return true; }
+        window.fbShowModal(message, function () {
+          form.dataset.fbConfirmed = '1';
+          if (form.requestSubmit) form.requestSubmit(); else form.submit();
+        });
+        return false;
+      };
+      document.getElementById('fb-modal-ok').addEventListener('click', function () {
+        var cb = pending; close(); if (cb) cb();
+      });
+      document.getElementById('fb-modal-cancel').addEventListener('click', close);
+      document.getElementById('fb-modal-backdrop').addEventListener('click', close);
+      document.addEventListener('keydown', function (e) { if (e.key === 'Escape') close(); });
+
+      // Local-time rendering: any <time data-utc="..."> shows the viewer's
+      // local time instead of server time.
+      document.querySelectorAll('time[data-utc]').forEach(function (el) {
+        var d = new Date(el.getAttribute('data-utc'));
+        if (!isNaN(d)) el.textContent = d.toLocaleString();
+      });
+    })();
+  </script>
+
   <!-- Notification toasts: polls /notifications (unseen messages for the
        signed-in user) and pops each one once. Approvals, declines, holds,
-       freezes — they all surface here without a page refresh. -->
+       freezes - they all surface here without a page refresh. -->
   <div id="fb-toasts" class="fixed bottom-5 right-5 z-50 flex flex-col gap-2 max-w-sm"></div>
   <script>
     (function () {
@@ -145,7 +206,11 @@
       // Only poll when someone is signed in (the server 401s otherwise).
       if (document.querySelector('form[action="/logout"]')) {
         poll();
-        setInterval(poll, 8000);
+        setInterval(poll, 5000);
+        // Each fetch marks messages seen, so with several tabs open only one
+        // tab shows a given toast. Re-polling on focus keeps the tab you're
+        // actually looking at as that tab.
+        window.addEventListener('focus', poll);
       }
     })();
   </script>

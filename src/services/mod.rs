@@ -1,7 +1,7 @@
 //! Business logic, organized as one file per domain.
 //!
 //! Each module exposes a trait + at least one concrete impl. Handlers depend on
-//! the trait (via `web::Data<dyn XxxService>`), never the concrete type — that's
+//! the trait (via `web::Data<dyn XxxService>`), never the concrete type - that's
 //! the OOP / polymorphism story.
 
 pub mod account_service;

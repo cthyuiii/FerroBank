@@ -34,7 +34,7 @@ struct SeedUser {
     email: &'static str,
     password: &'static str,
     full_name: &'static str,
-    /// National ID — customers only (staff have none).
+    /// National ID - customers only (staff have none).
     nric: Option<&'static str>,
     role: Role,
 }
@@ -90,14 +90,14 @@ async fn main() -> anyhow::Result<()> {
     // so it can run on its own (e.g. as part of `docker compose up`) without
     // waiting for the app container to create the schema first. sqlx takes a
     // migration advisory lock, so running this alongside the app's own
-    // migration step is safe — whichever acquires the lock first applies them,
+    // migration step is safe - whichever acquires the lock first applies them,
     // the other sees them already applied and no-ops.
     println!("── Migrations ────────────────────────────────");
     sqlx::migrate!("./migrations").run(&pool).await?;
     println!("  ✓ schema up to date");
 
     let auth = PgAuthService::new(pool.clone());
-    let accounts = PgAccountService::new(pool.clone());
+    let accounts = PgAccountService::new(pool.clone(), std::sync::Arc::new(ScreenOtp));
     let loans = PgLoanService::new(pool.clone(), std::sync::Arc::new(ScreenOtp));
 
     println!("── Users ─────────────────────────────────────");
@@ -119,7 +119,7 @@ async fn main() -> anyhow::Result<()> {
     println!("  admin@ferrobank.local   / admin123");
     println!("  teller@ferrobank.local  / teller123");
     println!("  alice@ferrobank.local   / alice123");
-    println!("  (others: bob, charlie, diana, eve, frank — same pattern)");
+    println!("  (others: bob, charlie, diana, eve, frank - same pattern)");
     Ok(())
 }
 
@@ -150,7 +150,7 @@ async fn seed_users(
                 ids.insert(u.key, user.id);
             }
             Err(AppError::Conflict(_)) => {
-                // Already exists — look up the id by email (avoids re-hashing the password).
+                // Already exists - look up the id by email (avoids re-hashing the password).
                 let row: (i64,) =
                     sqlx::query_as("SELECT id FROM users WHERE email = $1")
                         .bind(u.email)
@@ -186,7 +186,7 @@ async fn seed_accounts(
             }
             None => {
                 let x = accounts.open_account(user_id, a.kind, true).await?;
-                // Set the starting balance directly — only on first creation.
+                // Set the starting balance directly - only on first creation.
                 // Bypassing the transfer flow is fine here because this is the
                 // dev seed; production never SETs a balance, it only moves
                 // money between accounts.
@@ -261,7 +261,7 @@ async fn seed_transfers(
     account_ids: &HashMap<&'static str, i64>,
     pool: &PgPool,
 ) -> anyhow::Result<()> {
-    // If any transfers already exist, leave them alone — keeps the script idempotent
+    // If any transfers already exist, leave them alone - keeps the script idempotent
     // without us having to track individual rows.
     let existing: (i64,) =
         sqlx::query_as("SELECT COUNT(*)::BIGINT FROM transfers")
@@ -275,16 +275,16 @@ async fn seed_transfers(
     // (from, to, amount, status, note, status_reason, days_ago)
     // `status_reason` is only meaningful for non-completed transfers; it explains
     // why the transfer was rejected so the UI doesn't have to guess.
-    // The last five rows are fraud-rule demos — one per dashboard signal:
-    // structuring (just under $10k), large (≥ $10k), an explicit rejection,
-    // and a 4-transfer velocity burst from one account inside 24 hours.
+    // The later rows are fraud-rule demos for the dashboard: a large transfer
+    // (>= $10k), a flaggable rejection (frozen source - funds-based rejections
+    // are pre-checked and never flagged), and a 4-transfer velocity burst.
     let plan: &[(&str, &str, &str, &str, &str, Option<&str>, i32)] = &[
         ("alice_checking",  "bob_checking",      "100.00", "completed", "rent split",     None,                       7),
         ("bob_checking",    "charlie_checking",   "50.00", "completed", "groceries",      None,                       1),
         ("alice_savings",   "diana_savings",     "200.00", "completed", "welcome gift",   None,                       0),
         ("alice_checking",  "bob_savings",      "9999.00", "completed", "invoice 4471",   None,                       2),
         ("eve_savings",     "frank_checking",  "12500.00", "completed", "car purchase",   None,                       4),
-        ("bob_checking",    "alice_checking",     "25.00", "rejected",  "test",           Some("insufficient funds"), 3),
+        ("bob_checking",    "alice_checking",     "25.00", "rejected",  "test",           Some("source account is frozen"), 3),
         ("charlie_checking", "bob_checking",      "40.00", "completed", "split bill 1/4", None,                       0),
         ("charlie_checking", "bob_checking",      "40.00", "completed", "split bill 2/4", None,                       0),
         ("charlie_checking", "bob_checking",      "40.00", "completed", "split bill 3/4", None,                       0),

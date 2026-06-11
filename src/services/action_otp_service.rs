@@ -1,14 +1,14 @@
-//! Generalized action-level OTP guard — Member 4's extended feature.
+//! Generalized action-level OTP guard - Member 4's extended feature.
 //!
 //! The transfer flow has OTP confirmation built into its own table; this
 //! service extends the same one-time-code protection to ANY sensitive action:
 //! account opening, loan applications, and profile changes. The pattern:
 //!
-//!   1. `begin()` — store the action's inputs as a payload, generate a 6-digit
+//!   1. `begin()` - store the action's inputs as a payload, generate a 6-digit
 //!      code (argon2-hashed at rest), deliver it via the injected
 //!      [`OtpChannel`] (Telegram, or on-screen fallback).
 //!   2. The handler renders the shared `otp_confirm.html` page.
-//!   3. `verify()` — single-use, owner-bound, 10-minute expiry. Returns the
+//!   3. `verify()` - single-use, owner-bound, 10-minute expiry. Returns the
 //!      payload so the handler can finally perform the deferred action.
 
 use std::sync::Arc;
@@ -27,10 +27,12 @@ use crate::services::telegram_service::OtpChannel;
 
 /// How long a code stays valid.
 const OTP_TTL_MINUTES: i64 = 10;
+/// Wrong-code budget before the pending action is cancelled outright.
+const MAX_ATTEMPTS: i32 = 3;
 
 pub struct ActionChallenge {
     pub action_id: i64,
-    /// Plaintext code — only for on-screen display when not delivered.
+    /// Plaintext code - only for on-screen display when not delivered.
     pub otp: String,
     /// `true` when the code went to the user's linked Telegram.
     pub delivered: bool,
@@ -72,6 +74,7 @@ impl PgActionOtpService {
 struct ActionRow {
     otp_hash: String,
     payload: serde_json::Value,
+    attempts: i32,
     created_at: DateTime<Utc>,
 }
 
@@ -136,7 +139,7 @@ impl ActionOtpService for PgActionOtpService {
         // Owner-bound + purpose-bound + unconsumed, locked against double use.
         let row: ActionRow = sqlx::query_as(
             r#"
-            SELECT otp_hash, payload, created_at
+            SELECT otp_hash, payload, attempts, created_at
             FROM action_otps
             WHERE id = $1 AND user_id = $2 AND purpose = $3 AND consumed_at IS NULL
             FOR UPDATE
@@ -151,7 +154,7 @@ impl ActionOtpService for PgActionOtpService {
 
         if Utc::now() - row.created_at > Duration::minutes(OTP_TTL_MINUTES) {
             return Err(AppError::Conflict(
-                "the code has expired — please start the action again".into(),
+                "the code has expired - please start the action again".into(),
             ));
         }
 
@@ -161,7 +164,30 @@ impl ActionOtpService for PgActionOtpService {
             .verify_password(otp.trim().as_bytes(), &parsed)
             .is_err()
         {
-            return Err(AppError::BadRequest("invalid confirmation code".into()));
+            let attempts = row.attempts + 1;
+            if attempts >= MAX_ATTEMPTS {
+                // Three strikes: the pending action is cancelled outright.
+                sqlx::query(
+                    r#"UPDATE action_otps SET attempts = $2, consumed_at = now() WHERE id = $1"#,
+                )
+                .bind(action_id)
+                .bind(attempts)
+                .execute(&mut *tx)
+                .await?;
+                tx.commit().await?;
+                return Err(AppError::Conflict(
+                    "too many invalid codes - this confirmation has been cancelled".into(),
+                ));
+            }
+            sqlx::query(r#"UPDATE action_otps SET attempts = $2 WHERE id = $1"#)
+                .bind(action_id)
+                .bind(attempts)
+                .execute(&mut *tx)
+                .await?;
+            tx.commit().await?;
+            return Err(AppError::BadRequest(format!(
+                "invalid confirmation code (attempt {attempts} of {MAX_ATTEMPTS})"
+            )));
         }
 
         sqlx::query(r#"UPDATE action_otps SET consumed_at = now() WHERE id = $1"#)

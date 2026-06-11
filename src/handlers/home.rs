@@ -1,4 +1,4 @@
-//! Public landing pages — owned by the Platform Lead (Member 1).
+//! Public landing pages - owned by the Platform Lead (Member 1).
 
 use actix_web::{web, HttpResponse};
 use askama::Template;

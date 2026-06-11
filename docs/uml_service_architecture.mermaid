@@ -19,6 +19,9 @@ classDiagram
         +adjust_balance(id, delta) Decimal
         +request_limit_change(id, limit) DateTime
         +pending_limit_change(id)
+        +request_adjustment(id, delta, who, role) Option~Decimal~
+        +approve_adjustment(req, who, role) Decimal
+        +pending_adjustments() List~AdjustmentRow~
         +list_for_user(user) List~Account~
     }
     class TransferService {
@@ -91,6 +94,8 @@ classDiagram
 
     PgTransferService o-- AuditService : composes
     PgTransferService o-- OtpChannel : composes
+    PgAccountService o-- OtpChannel : composes
+    PgLoanService o-- OtpChannel : composes
     PgActionOtpService o-- OtpChannel : composes
     PgAdminService o-- AccountService : composes
     PgAdminService o-- LoanService : composes

@@ -1,4 +1,4 @@
-//! Admin handlers — owned by the Platform Lead (Member 1).
+//! Admin handlers - owned by the Platform Lead (Member 1).
 //!
 //! Aggregates read-only data from every module into a single dashboard, plus
 //! the staff-facing management screens (all accounts / all transfers) and the
@@ -16,7 +16,7 @@ use crate::errors::AppError;
 use crate::middleware::auth::{CurrentUser, RequireRole};
 use crate::models::account::AccountType;
 use crate::models::user::Role;
-use crate::services::account_service::AccountService;
+use crate::services::account_service::{AccountService, AdjustmentRow};
 use crate::services::admin_service::{
     AdminAccountRow, AdminService, AdminTransferRow, AdminUserRow, DashboardSnapshot,
 };
@@ -43,13 +43,15 @@ pub fn routes(cfg: &mut web::ServiceConfig) {
             .route("/race-demo", web::post().to(race_demo_run)),
     );
 
-    // Staff area — tellers AND admins (RequireRole(Teller) treats admin as a
+    // Staff area - tellers AND admins (RequireRole(Teller) treats admin as a
     // superuser). Tellers manage account approvals and view all transfers here.
     cfg.service(
         web::scope("/staff")
             .wrap(RequireRole(Role::Teller))
             .route("/accounts", web::get().to(accounts))
             .route("/accounts/{id}/approve", web::post().to(account_approve))
+            .route("/adjustments/{id}/approve", web::post().to(adjustment_approve))
+            .route("/users/{id}", web::get().to(user_profile))
             .route("/transfers", web::get().to(transfers))
             .route("/review", web::get().to(review_queue))
             .route("/transfers/{id}/release", web::post().to(review_release))
@@ -108,23 +110,54 @@ struct AccountsTemplate {
     users: Vec<AdminUserRow>,
     /// Admins get the full CRUD controls; tellers only get "approve".
     is_admin: bool,
+    /// Large balance adjustments awaiting their second (other-role) approval.
+    pending_adjustments: Vec<AdjustmentRow>,
 }
 
 async fn accounts(
     svc: web::Data<dyn AdminService>,
+    account_svc: web::Data<dyn AccountService>,
     user: CurrentUser,
 ) -> Result<HttpResponse, AppError> {
     let accounts = svc.all_accounts().await?;
     // Only customers may own accounts, so the "open for a user" picker lists
     // customers only (no admin/teller staff).
     let users = svc.customers().await?;
+    let pending_adjustments = account_svc.pending_adjustments().await?;
     let is_admin = user.role == Role::Admin;
     render(AccountsTemplate {
         layout: LayoutCtx::from_user(Some(&user)),
         accounts,
         users,
         is_admin,
+        pending_adjustments,
     })
+}
+
+/// Second-role approval of a parked balance adjustment (dual control).
+async fn adjustment_approve(
+    path: web::Path<i64>,
+    account_svc: web::Data<dyn AccountService>,
+    audit_svc: web::Data<dyn AuditService>,
+    user: CurrentUser,
+) -> Result<HttpResponse, AppError> {
+    let id = path.into_inner();
+    match account_svc.approve_adjustment(id, user.id, user.role).await {
+        Ok(new_balance) => {
+            audit_svc
+                .record(
+                    Some(user.id),
+                    "admin.account.adjustment_approved",
+                    json!({ "request_id": id, "new_balance": new_balance.to_string() }),
+                )
+                .await?;
+        }
+        // Same-role attempts or already-approved requests: the queue reflects
+        // reality, so just return to it.
+        Err(AppError::Conflict(_)) => {}
+        Err(e) => return Err(e),
+    }
+    Ok(redirect("/staff/accounts"))
 }
 
 #[derive(Debug, Deserialize)]
@@ -178,10 +211,16 @@ async fn account_freeze(
     user: CurrentUser,
 ) -> Result<HttpResponse, AppError> {
     let id = path.into_inner();
-    account_svc.freeze_account(id).await?;
-    audit_svc
-        .record(Some(user.id), "admin.account.frozen", json!({ "account_id": id }))
-        .await?;
+    match account_svc.freeze_account(id).await {
+        Ok(()) => {
+            audit_svc
+                .record(Some(user.id), "admin.account.frozen", json!({ "account_id": id }))
+                .await?;
+        }
+        // Already in that state: the page shows the live status - just return.
+        Err(AppError::Conflict(_)) => {}
+        Err(e) => return Err(e),
+    }
     Ok(redirect("/staff/accounts"))
 }
 
@@ -192,10 +231,15 @@ async fn account_unfreeze(
     user: CurrentUser,
 ) -> Result<HttpResponse, AppError> {
     let id = path.into_inner();
-    account_svc.unfreeze_account(id).await?;
-    audit_svc
-        .record(Some(user.id), "admin.account.unfrozen", json!({ "account_id": id }))
-        .await?;
+    match account_svc.unfreeze_account(id).await {
+        Ok(()) => {
+            audit_svc
+                .record(Some(user.id), "admin.account.unfrozen", json!({ "account_id": id }))
+                .await?;
+        }
+        Err(AppError::Conflict(_)) => {}
+        Err(e) => return Err(e),
+    }
     Ok(redirect("/staff/accounts"))
 }
 
@@ -207,10 +251,15 @@ async fn account_approve(
     user: CurrentUser,
 ) -> Result<HttpResponse, AppError> {
     let id = path.into_inner();
-    account_svc.approve_account(id).await?;
-    audit_svc
-        .record(Some(user.id), "account.approved", json!({ "account_id": id }))
-        .await?;
+    match account_svc.approve_account(id).await {
+        Ok(()) => {
+            audit_svc
+                .record(Some(user.id), "account.approved", json!({ "account_id": id }))
+                .await?;
+        }
+        Err(AppError::Conflict(_)) => {}
+        Err(e) => return Err(e),
+    }
     Ok(redirect("/staff/accounts"))
 }
 
@@ -245,18 +294,33 @@ async fn account_adjust(
     let delta = Decimal::from_str(form.delta.trim()).map_err(|_| {
         AppError::BadRequest("adjustment must be a number like 50.00 or -50.00".into())
     })?;
-    let new_balance = account_svc.adjust_balance(id, delta).await?;
-    audit_svc
-        .record(
-            Some(user.id),
-            "admin.account.adjusted",
-            json!({
-                "account_id": id,
-                "delta": delta.to_string(),
-                "new_balance": new_balance.to_string()
-            }),
-        )
-        .await?;
+    match account_svc
+        .request_adjustment(id, delta, user.id, user.role)
+        .await?
+    {
+        Some(new_balance) => {
+            audit_svc
+                .record(
+                    Some(user.id),
+                    "admin.account.adjusted",
+                    json!({
+                        "account_id": id,
+                        "delta": delta.to_string(),
+                        "new_balance": new_balance.to_string()
+                    }),
+                )
+                .await?;
+        }
+        None => {
+            audit_svc
+                .record(
+                    Some(user.id),
+                    "admin.account.adjustment_requested",
+                    json!({ "account_id": id, "delta": delta.to_string() }),
+                )
+                .await?;
+        }
+    }
     Ok(redirect("/staff/accounts"))
 }
 
@@ -417,13 +481,13 @@ async fn race_demo_run(
         let accounts = race_demo_accounts(&svc).await?;
         return fail(
             accounts,
-            "Use 1–10 tasks and two different accounts.".into(),
+            "Use 1-10 tasks and two different accounts.".into(),
             &user,
         );
     }
 
     // The engine's ownership check requires the source account's owner as the
-    // acting user, so the demo impersonates them — fine for an admin-only lab.
+    // acting user, so the demo impersonates them - fine for an admin-only lab.
     let from = account_svc.get_by_id(form.from_account_id).await?;
     let owner_id = from.user_id;
     let start_from = from.balance;
@@ -498,6 +562,108 @@ async fn race_demo_run(
     })
 }
 
+// ── Per-user activity view (staff side) ─────────────────────────────
+
+/// One sign-in event in the user's login history.
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct LoginRow {
+    browser: String,
+    ip: Option<String>,
+    is_new_device: bool,
+    is_new_network: bool,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Identity card for the profile header.
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct ProfileUser {
+    id: i64,
+    full_name: String,
+    email: String,
+    nric: Option<String>,
+    role: Role,
+    telegram_linked: bool,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// An active sign-in block on this user's account.
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct BlockRow {
+    browser: String,
+    ip: String,
+    reason: String,
+    blocked_until: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Template)]
+#[template(path = "admin/user.html")]
+struct UserProfileTemplate {
+    layout: LayoutCtx,
+    profile: ProfileUser,
+    logins: Vec<LoginRow>,
+    blocks: Vec<BlockRow>,
+    accounts: Vec<crate::models::account::Account>,
+    transfers: Vec<AdminTransferRow>,
+}
+
+/// Everything staff need about one user in one place: identity, login
+/// history with new-device/new-network fraud flags, accounts, transfers.
+async fn user_profile(
+    path: web::Path<i64>,
+    svc: web::Data<dyn AdminService>,
+    account_svc: web::Data<dyn AccountService>,
+    state: web::Data<AppState>,
+    user: CurrentUser,
+) -> Result<HttpResponse, AppError> {
+    let target = path.into_inner();
+
+    let profile: ProfileUser = sqlx::query_as(
+        r#"
+        SELECT id, full_name, email, nric, role,
+               telegram_chat_id IS NOT NULL AS telegram_linked, created_at
+        FROM users WHERE id = $1
+        "#,
+    )
+    .bind(target)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound(format!("user {target} not found")))?;
+
+    let logins: Vec<LoginRow> = sqlx::query_as(
+        r#"
+        SELECT browser, ip, is_new_device, is_new_network, created_at
+        FROM login_sessions WHERE user_id = $1
+        ORDER BY created_at DESC LIMIT 50
+        "#,
+    )
+    .bind(target)
+    .fetch_all(&state.db)
+    .await?;
+
+    let blocks: Vec<BlockRow> = sqlx::query_as(
+        r#"
+        SELECT browser, ip, reason, blocked_until
+        FROM blocked_origins
+        WHERE user_id = $1 AND blocked_until > now()
+        ORDER BY blocked_until DESC
+        "#,
+    )
+    .bind(target)
+    .fetch_all(&state.db)
+    .await?;
+    let accounts = account_svc.list_for_user(target).await?;
+    let transfers = svc.transfers_for_user(target).await?;
+
+    render(UserProfileTemplate {
+        layout: LayoutCtx::from_user(Some(&user)),
+        profile,
+        logins,
+        blocks,
+        accounts,
+        transfers,
+    })
+}
+
 // ── Held-transfer review queue (staff side) ─────────────────────────
 
 #[derive(Template)]
@@ -523,7 +689,10 @@ async fn review_release(
     transfer_svc: web::Data<dyn TransferService>,
     user: CurrentUser,
 ) -> Result<HttpResponse, AppError> {
-    transfer_svc.release(user.id, path.into_inner()).await?;
+    match transfer_svc.release(user.id, path.into_inner()).await {
+        Ok(()) | Err(AppError::Conflict(_)) => {}
+        Err(e) => return Err(e),
+    }
     Ok(redirect("/staff/review"))
 }
 
@@ -544,7 +713,10 @@ async fn review_deny(
         .map(|r| r.trim().to_string())
         .filter(|r| !r.is_empty())
         .unwrap_or_else(|| "denied after staff review".to_string());
-    transfer_svc.deny(user.id, path.into_inner(), &reason).await?;
+    match transfer_svc.deny(user.id, path.into_inner(), &reason).await {
+        Ok(()) | Err(AppError::Conflict(_)) => {}
+        Err(e) => return Err(e),
+    }
     Ok(redirect("/staff/review"))
 }
 

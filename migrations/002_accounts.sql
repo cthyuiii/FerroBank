@@ -30,7 +30,7 @@ CREATE TABLE accounts (
 CREATE INDEX accounts_user_id_idx ON accounts (user_id);
 CREATE INDEX accounts_status_idx  ON accounts (status);
 
--- Accounts may only belong to customers — staff never hold bank accounts.
+-- Accounts may only belong to customers - staff never hold bank accounts.
 CREATE FUNCTION accounts_owner_must_be_customer() RETURNS trigger AS $$
 BEGIN
     IF (SELECT role FROM users WHERE id = NEW.user_id) <> 'customer' THEN
@@ -60,3 +60,19 @@ CREATE TABLE limit_changes (
 );
 
 CREATE INDEX limit_changes_account_idx ON limit_changes (account_id, effective_at);
+
+-- Dual-control balance adjustments: staff edits with |delta| > $1,000 are
+-- parked here until a member of the OTHER staff role approves them.
+CREATE TABLE adjustment_requests (
+    id              BIGSERIAL PRIMARY KEY,
+    account_id      BIGINT          NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    delta           NUMERIC(18, 2)  NOT NULL,
+    requested_by    BIGINT          NOT NULL REFERENCES users(id),
+    requested_role  user_role       NOT NULL,
+    requested_at    TIMESTAMPTZ     NOT NULL DEFAULT now(),
+    approved_by     BIGINT          REFERENCES users(id),
+    approved_at     TIMESTAMPTZ
+);
+
+CREATE INDEX adjustment_requests_pending_idx
+    ON adjustment_requests (approved_at) WHERE approved_at IS NULL;

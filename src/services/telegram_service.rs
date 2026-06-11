@@ -1,7 +1,7 @@
-//! Telegram OTP channel — Member 4's extended feature.
+//! Telegram OTP channel - Member 4's extended feature.
 //!
 //! Same OOP shape as the rest of the codebase: the [`OtpChannel`] trait is the
-//! abstraction the transfer engine depends on, with two implementations —
+//! abstraction the transfer engine depends on, with two implementations -
 //! [`TelegramOtp`] (real out-of-band delivery via the Telegram Bot API) and
 //! [`ScreenOtp`] (the on-screen demo fallback). `main.rs` picks one at startup
 //! based on whether `TELEGRAM_BOT_TOKEN` is configured, and the engine never
@@ -43,7 +43,7 @@ impl OtpChannel for ScreenOtp {
 // ── The real channel ─────────────────────────────────────────────────
 
 pub struct TelegramOtp {
-    // Private — consumers only see the trait. The encapsulation boundary.
+    // Private - consumers only see the trait. The encapsulation boundary.
     db: PgPool,
     http: reqwest::Client,
     api_base: String,
@@ -80,8 +80,8 @@ impl OtpChannel for TelegramOtp {
 
         let text = format!(
             "\u{1F510} FerroBank verification code: {otp}\n\nEnter it on the \
-             confirm page to authorize your pending transfer. If you didn't \
-             request this, sign in and review your account."
+             confirmation page to continue. If you didn't request a code, \
+             sign in and review your account."
         );
         let sent = self
             .http
@@ -160,7 +160,7 @@ pub async fn run_link_poller(db: PgPool, token: String) {
     let _ = http
         .post(format!("{base}/setMyCommands"))
         .json(&json!({ "commands": [
-            { "command": "unlink", "description": "Unlink FerroBank — codes appear on screen again" },
+            { "command": "unlink", "description": "Unlink FerroBank - codes appear on screen again" },
             { "command": "help",   "description": "List available commands" }
         ]}))
         .timeout(Duration::from_secs(10))
@@ -226,7 +226,7 @@ pub async fn run_link_poller(db: PgPool, token: String) {
                         Some((name,)) => {
                             tracing::info!(chat_id, "telegram account linked");
                             format!(
-                                "\u{2705} Linked! Hi {name} — your FerroBank one-time \
+                                "\u{2705} Linked! Hi {name} - your FerroBank one-time \
                                  codes will arrive in this chat from now on.\n\n\
                                  Send /unlink at any time to disconnect."
                             )
@@ -238,25 +238,46 @@ pub async fn run_link_poller(db: PgPool, token: String) {
                     }
                 }
             } else if text.starts_with("/unlink") {
-                // Dynamic DB update straight from the chat: drop every
-                // FerroBank account linked to this chat id.
-                let unlinked = sqlx::query(
-                    r#"UPDATE users SET telegram_chat_id = NULL WHERE telegram_chat_id = $1"#,
+                // Hardened: never instant. The unlink is scheduled 24 hours
+                // out so an attacker inside a stolen Telegram account cannot
+                // immediately silence future security alerts - the real owner
+                // has a day to cancel from the website (password + session
+                // required there).
+                let scheduled: Vec<(i64,)> = sqlx::query_as(
+                    r#"
+                    UPDATE users SET telegram_unlink_at = now() + interval '24 hours'
+                    WHERE telegram_chat_id = $1 AND telegram_unlink_at IS NULL
+                    RETURNING id
+                    "#,
                 )
                 .bind(chat_id)
-                .execute(&db)
+                .fetch_all(&db)
                 .await
-                .map(|r| r.rows_affected())
-                .unwrap_or(0);
-                if unlinked > 0 {
-                    tracing::info!(chat_id, unlinked, "telegram unlink via bot command");
-                    format!(
-                        "\u{1F513} Unlinked {unlinked} FerroBank account(s) from this \
-                         chat. One-time codes will appear on screen again. \
-                         Re-link any time from Settings \u{2192} Telegram codes."
-                    )
+                .unwrap_or_default();
+                if !scheduled.is_empty() {
+                    for (uid,) in &scheduled {
+                        crate::services::audit_service::notify(
+                            &db,
+                            *uid,
+                            "Telegram unlink was requested from your chat and is scheduled in 24 hours. If this wasn't you, cancel it in Settings and change your password now.",
+                        )
+                        .await;
+                        let _ = sqlx::query(
+                            r#"INSERT INTO audit_log (actor_user_id, event, payload) VALUES ($1, 'telegram.unlink_scheduled', $2)"#,
+                        )
+                        .bind(uid)
+                        .bind(serde_json::json!({ "chat_id": chat_id }))
+                        .execute(&db)
+                        .await;
+                    }
+                    tracing::info!(chat_id, count = scheduled.len(), "telegram unlink scheduled");
+                    "\u{23F3} Unlink scheduled: this chat stops receiving FerroBank \
+                     codes and alerts in 24 hours. If this wasn't you, cancel it \
+                     from the FerroBank website (Settings) and change your \
+                     password immediately."
+                        .to_string()
                 } else {
-                    "No FerroBank account is linked to this chat.".to_string()
+                    "No FerroBank account is linked to this chat, or an unlink is already scheduled.".to_string()
                 }
             } else {
                 // /help and anything unrecognised.

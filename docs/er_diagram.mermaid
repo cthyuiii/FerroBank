@@ -1,4 +1,5 @@
 erDiagram
+    users ||--o{ login_sessions : "signs in"
     users ||--o{ accounts : "owns (customers only)"
     users ||--o{ loans : applies
     users ||--o{ action_otps : "pending actions"
@@ -7,6 +8,7 @@ erDiagram
     users ||--o{ loan_approvals : approves
     users ||--o{ transfer_reviews : decides
     accounts ||--o{ limit_changes : "limit history"
+    accounts ||--o{ adjustment_requests : "dual-control edits"
     accounts ||--o{ transfers : "from / to"
     accounts ||--o{ repayments : "funds (nullable)"
     accounts ||--o{ loans : "disbursement (nullable)"
@@ -27,6 +29,14 @@ erDiagram
         bigint telegram_chat_id
         text telegram_link_code UK
         timestamptz last_activity_at
+    }
+    login_sessions {
+        bigserial id PK
+        bigint user_id FK
+        text browser "Chrome Safari Firefox Edge Other"
+        text ip
+        boolean is_new_device "first-seen browser"
+        boolean is_new_network "first-seen IP"
     }
     accounts {
         bigserial id PK
@@ -72,6 +82,16 @@ erDiagram
         int term_months
         loan_status status
         bigint disbursement_account_id FK
+        timestamptz next_payment_due "advances monthly"
+    }
+    adjustment_requests {
+        bigserial id PK
+        bigint account_id FK
+        numeric delta "over 1000 parks here"
+        bigint requested_by FK
+        user_role requested_role
+        bigint approved_by FK "must be the other role"
+        timestamptz approved_at
     }
     loan_approvals {
         bigserial id PK

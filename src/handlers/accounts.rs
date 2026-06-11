@@ -1,4 +1,4 @@
-//! Accounts handlers — owned by the Accounts module (Member 3).
+//! Accounts handlers - owned by the Accounts module (Member 3).
 //!
 //! Flow:
 //!   GET  /accounts            → list current user's accounts
@@ -34,7 +34,9 @@ pub fn routes(cfg: &mut web::ServiceConfig) {
             .route("/{id}", web::get().to(detail))
             .route("/{id}/freeze", web::post().to(freeze))
             .route("/{id}/close", web::post().to(close))
-            .route("/{id}/limit", web::post().to(limit_change)),
+            .route("/{id}/limit", web::post().to(limit_change))
+            .route("/{id}/limit/confirm", web::post().to(limit_change_confirm))
+            .route("/{id}/status", web::get().to(status)),
     );
 }
 
@@ -68,7 +70,7 @@ struct DetailTemplate {
     layout: LayoutCtx,
     account: Account,
     can_manage: bool,
-    /// Staff (teller/admin) — only they may freeze an account.
+    /// Staff (teller/admin) - only they may freeze an account.
     is_staff: bool,
     /// A limit increase waiting out its hold window: (new limit, effective at).
     pending_limit: Option<(Decimal, chrono::DateTime<chrono::Utc>)>,
@@ -177,10 +179,23 @@ async fn create_confirm(
         .await
     {
         Ok(p) => p,
-        Err(AppError::BadRequest(msg)) | Err(AppError::Conflict(msg)) => {
+        // Wrong code: the action is still pending - retry inline.
+        Err(AppError::BadRequest(msg)) => {
+            return render(OtpConfirmPage {
+                layout: LayoutCtx::from_user(Some(&user)),
+                title: "Confirm new account".into(),
+                summary: vec![],
+                action_url: "/accounts/new/confirm".into(),
+                cancel_url: "/accounts".into(),
+                action_id: form.action_id,
+                demo_otp: None,
+                error: Some(msg),
+            });
+        }
+        Err(AppError::Conflict(msg)) => {
             return render(NewTemplate {
                 layout: LayoutCtx::from_user(Some(&user)),
-                error: Some(format!("{msg} — please start again.")),
+                error: Some(format!("{msg} - please start again.")),
             });
         }
         Err(other) => return Err(other),
@@ -192,7 +207,7 @@ async fn create_confirm(
         _ => return Err(AppError::Internal(anyhow::anyhow!("bad account.open payload"))),
     };
 
-    // Customer self-opens are created pending — a teller/admin must approve.
+    // Customer self-opens are created pending - a teller/admin must approve.
     let account = svc.open_account(user.id, kind, false).await?;
 
     Ok(HttpResponse::Found()
@@ -225,7 +240,7 @@ async fn render_detail(
 
     // Owners always see manage buttons; staff also see them on any account.
     let can_manage = account.user_id == user.id || user.role != Role::Customer;
-    // Only staff may freeze an account — normal users must not see that option.
+    // Only staff may freeze an account - normal users must not see that option.
     let is_staff = user.role != Role::Customer;
     let pending_limit = svc.pending_limit_change(account_id).await?;
 
@@ -251,6 +266,7 @@ async fn limit_change(
     path: web::Path<i64>,
     form: web::Form<LimitForm>,
     svc: web::Data<dyn AccountService>,
+    otp_svc: web::Data<dyn ActionOtpService>,
     user: CurrentUser,
 ) -> Result<HttpResponse, AppError> {
     let account_id = path.into_inner();
@@ -260,27 +276,92 @@ async fn limit_change(
     }
 
     let new_limit = match Decimal::from_str(form.new_limit.trim()) {
-        Ok(d) => d,
-        Err(_) => {
+        Ok(d) if d > Decimal::ZERO => d,
+        _ => {
             return render_detail(
                 account_id,
                 &svc,
                 &user,
-                Some("The limit must be a number like 8000.00.".into()),
+                Some("The limit must be a positive number like 8000.00.".into()),
             )
             .await
         }
     };
 
+    // Changing a limit is a sensitive action: nothing is posted until the
+    // one-time code verifies.
+    let challenge = otp_svc
+        .begin(
+            user.id,
+            "limit.change",
+            serde_json::json!({ "account_id": account_id, "new_limit": new_limit.to_string() }),
+        )
+        .await?;
+
+    render(OtpConfirmPage {
+        layout: LayoutCtx::from_user(Some(&user)),
+        title: "Confirm limit change".into(),
+        summary: vec![
+            ("Account".into(), account.account_number.clone()),
+            ("Current limit".into(), format!("${}", account.transfer_limit)),
+            ("Requested limit".into(), format!("${new_limit}")),
+        ],
+        action_url: format!("/accounts/{account_id}/limit/confirm"),
+        cancel_url: format!("/accounts/{account_id}"),
+        action_id: challenge.action_id,
+        demo_otp: if challenge.delivered { None } else { Some(challenge.otp) },
+        error: None,
+    })
+}
+
+async fn limit_change_confirm(
+    path: web::Path<i64>,
+    form: web::Form<ActionConfirmForm>,
+    svc: web::Data<dyn AccountService>,
+    otp_svc: web::Data<dyn ActionOtpService>,
+    user: CurrentUser,
+) -> Result<HttpResponse, AppError> {
+    let account_id = path.into_inner();
+    let account = svc.get_by_id(account_id).await?;
+    if account.user_id != user.id {
+        return Err(AppError::Forbidden);
+    }
+
+    let payload = match otp_svc
+        .verify(user.id, form.action_id, "limit.change", &form.otp)
+        .await
+    {
+        Ok(p) => p,
+        // Wrong code: retry inline on the same confirmation page.
+        Err(AppError::BadRequest(msg)) => {
+            return render(OtpConfirmPage {
+                layout: LayoutCtx::from_user(Some(&user)),
+                title: "Confirm limit change".into(),
+                summary: vec![],
+                action_url: format!("/accounts/{account_id}/limit/confirm"),
+                cancel_url: format!("/accounts/{account_id}"),
+                action_id: form.action_id,
+                demo_otp: None,
+                error: Some(msg),
+            });
+        }
+        Err(AppError::Conflict(msg)) => {
+            return render_detail(account_id, &svc, &user, Some(format!("{msg} - please start again."))).await;
+        }
+        Err(other) => return Err(other),
+    };
+    if payload["account_id"].as_i64() != Some(account_id) {
+        return Err(AppError::BadRequest("this confirmation belongs to a different account".into()));
+    }
+    let new_limit = Decimal::from_str(payload["new_limit"].as_str().unwrap_or_default())
+        .map_err(|_| AppError::Internal(anyhow::anyhow!("bad limit.change payload")))?;
+
     match svc.request_limit_change(account_id, new_limit).await {
-        Ok(effective_at) => {
+        Ok(_) => {
             let msg = if new_limit <= account.transfer_limit {
-                format!("Limit lowered to ${new_limit} — effective immediately.")
+                format!("Limit lowered to ${new_limit}, effective immediately.")
             } else {
-                format!(
-                    "Limit increase to ${new_limit} accepted. For your security it takes effect at {} (server time).",
-                    effective_at.format("%Y-%m-%d %H:%M:%S")
-                )
+                format!("Limit increase to ${new_limit} accepted - it takes effect at the time shown above (your local time).")
             };
             render_detail(account_id, &svc, &user, Some(msg)).await
         }
@@ -302,7 +383,11 @@ async fn freeze(
     }
 
     let account_id = path.into_inner();
-    svc.freeze_account(account_id).await?;
+    match svc.freeze_account(account_id).await {
+        // Already frozen (double submit): the page shows the state.
+        Ok(()) | Err(AppError::Conflict(_)) => {}
+        Err(e) => return Err(e),
+    }
 
     Ok(HttpResponse::Found()
         .insert_header(("Location", format!("/accounts/{account_id}")))
@@ -322,11 +407,31 @@ async fn close(
         return Err(AppError::Forbidden);
     }
 
-    svc.close_account(account_id).await?;
+    match svc.close_account(account_id).await {
+        Ok(()) => Ok(HttpResponse::Found()
+            .insert_header(("Location", "/accounts"))
+            .finish()),
+        // Not closable (already closed, or still holds money): show why
+        // inline on the account page instead of a 409.
+        Err(AppError::Conflict(msg)) => {
+            render_detail(account_id, &svc, &user, Some(msg)).await
+        }
+        Err(e) => Err(e),
+    }
+}
 
-    Ok(HttpResponse::Found()
-        .insert_header(("Location", "/accounts"))
-        .finish())
+/// Live status for pending accounts: the page refreshes itself the moment a
+/// teller approves (or the account otherwise changes state).
+async fn status(
+    path: web::Path<i64>,
+    svc: web::Data<dyn AccountService>,
+    user: CurrentUser,
+) -> Result<HttpResponse, AppError> {
+    let account = svc.get_by_id(path.into_inner()).await?;
+    if account.user_id != user.id && user.role == Role::Customer {
+        return Err(AppError::Forbidden);
+    }
+    Ok(HttpResponse::Ok().json(serde_json::json!({ "status": account.status.label() })))
 }
 
 // ── Render helper ────────────────────────────────────────────────────

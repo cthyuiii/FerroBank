@@ -30,8 +30,25 @@
 
 {% if account.status == AccountStatus::Pending %}
   <section class="mt-4 p-4 rounded-lg border border-blue-200 bg-blue-50 text-sm text-blue-700">
-    This account is awaiting staff approval. You'll be able to use it once a teller or admin approves it.
+    This account is awaiting staff approval. You'll be able to use it once a
+    teller or admin approves it - this page updates by itself when that happens.
   </section>
+  <!-- Auto-refresh the moment staff approve (or otherwise change) the account. -->
+  <script>
+    (function () {
+      var timer = setInterval(function () {
+        fetch('/accounts/{{ account.id }}/status', { credentials: 'same-origin' })
+          .then(function (r) { return r.json(); })
+          .then(function (s) {
+            if (s && s.status && s.status !== 'Pending approval') {
+              clearInterval(timer);
+              location.reload();
+            }
+          })
+          .catch(function () {});
+      }, 4000);
+    })();
+  </script>
 {% endif %}
 
 <!-- Metadata grid -->
@@ -59,13 +76,15 @@
       <div class="mt-1 font-mono text-2xl font-semibold text-stone-900">${{ account.transfer_limit }}</div>
       {% if let Some(p) = pending_limit %}
         <div class="mt-1 text-xs text-blue-700">
-          Pending change to <span class="font-mono">${{ p.0 }}</span> — takes effect {{ p.1.format("%Y-%m-%d %H:%M:%S") }} (server time).
+          Pending change to <span class="font-mono">${{ p.0 }}</span> takes effect
+          <time data-utc="{{ p.1.to_rfc3339() }}">{{ p.1.format("%Y-%m-%d %H:%M") }} UTC</time>
+          (your local time).
         </div>
       {% endif %}
     </div>
     {% if !is_staff %}
       <form action="/accounts/{{ account.id }}/limit" method="POST"
-            onsubmit="return confirm('Security notice:\n\nIncreasing your transfer limit raises the risk of large unauthorized transfers if your account is ever compromised. For your protection, INCREASES only take effect after a hold window (normally 12 hours).\n\nProceed with this request?');"
+            onsubmit="return fbConfirmSubmit(this, 'Security notice: increasing your transfer limit raises the risk of large unauthorized transfers if your account is ever compromised. For your protection, increases only take effect after a hold window (normally 12 hours). You will confirm this request with a one-time code next.');"
             class="flex items-end gap-2">
         <div>
           <label for="new_limit" class="block text-xs text-stone-500">New limit</label>
@@ -115,10 +134,10 @@
                 Prevents new transfers until a staff member unfreezes it. Staff only.
               </div>
             </div>
-            <form action="/accounts/{{ account.id }}/freeze" method="POST">
+            <form action="/accounts/{{ account.id }}/freeze" method="POST"
+                  onsubmit="return fbConfirmSubmit(this, 'Freeze account {{ account.account_number }}? The owner will be unable to send money until it is unfrozen.');">
               <button type="submit"
-                      class="px-3 py-1.5 rounded-md border border-amber-300 bg-white text-sm font-medium text-amber-800 hover:bg-amber-50 transition"
-                      onclick="return confirm('Freeze account {{ account.account_number }}?');">
+                      class="px-3 py-1.5 rounded-md border border-amber-300 bg-white text-sm font-medium text-amber-800 hover:bg-amber-50 transition">
                 Freeze
               </button>
             </form>
@@ -134,10 +153,10 @@
               Permanently closes the account. Balance must be zero before closing.
             </div>
           </div>
-          <form action="/accounts/{{ account.id }}/close" method="POST">
+          <form action="/accounts/{{ account.id }}/close" method="POST"
+                onsubmit="return fbConfirmSubmit(this, 'Close account {{ account.account_number }}? This cannot be undone.');">
             <button type="submit"
-                    class="px-3 py-1.5 rounded-md border border-red-300 bg-white text-sm font-medium text-red-700 hover:bg-red-50 transition"
-                    onclick="return confirm('Close account {{ account.account_number }}? This cannot be undone.');">
+                    class="px-3 py-1.5 rounded-md border border-red-300 bg-white text-sm font-medium text-red-700 hover:bg-red-50 transition">
               Close
             </button>
           </form>

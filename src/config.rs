@@ -4,7 +4,7 @@ use anyhow::Context;
 
 /// Runtime configuration, loaded from environment variables on startup.
 ///
-/// Mutating env vars after the app starts has no effect — this is read once.
+/// Mutating env vars after the app starts has no effect - this is read once.
 #[derive(Clone, Debug)]
 pub struct Config {
     pub database_url: String,

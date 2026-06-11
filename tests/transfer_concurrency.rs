@@ -50,7 +50,7 @@ async fn rig(fund_dollars: i64) -> Option<Rig> {
     let pool = ferrobank::db::connect(&url).await.expect("db connect");
     sqlx::migrate!("./migrations").run(&pool).await.expect("migrations");
 
-    // Fresh actors every run — unique emails keep the tests idempotent.
+    // Fresh actors every run - unique emails keep the tests idempotent.
     let stamp = chrono::Utc::now().timestamp_micros();
     let auth = PgAuthService::new(pool.clone());
     let sender = auth
@@ -78,7 +78,7 @@ async fn rig(fund_dollars: i64) -> Option<Rig> {
         .await
         .expect("register recipient");
 
-    let accounts = PgAccountService::new(pool.clone());
+    let accounts = PgAccountService::new(pool.clone(), Arc::new(ScreenOtp));
     let from = accounts
         .open_account(sender.id, AccountType::Checking, true)
         .await
@@ -108,7 +108,7 @@ async fn rig(fund_dollars: i64) -> Option<Rig> {
 
 /// Race condition + inconsistent balance: five simultaneous $10 transfers out
 /// of a $30 balance. Without the `FOR UPDATE` row locks, several tasks would
-/// read "balance = 30" at once and all debit — overdrawing the account. With
+/// read "balance = 30" at once and all debit - overdrawing the account. With
 /// the locks, exactly three fit and every dollar is accounted for.
 #[tokio::test]
 async fn concurrent_transfers_never_overdraw_or_lose_money() {
@@ -146,7 +146,7 @@ async fn concurrent_transfers_never_overdraw_or_lose_money() {
     assert_eq!(
         to_balance,
         Decimal::from(30),
-        "every dollar debited arrived — none lost, none duplicated"
+        "every dollar debited arrived - none lost, none duplicated"
     );
 }
 

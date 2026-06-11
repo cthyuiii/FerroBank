@@ -1,4 +1,4 @@
-//! Transfer service — owned by the Transfers module (Member 4).
+//! Transfer service - owned by the Transfers module (Member 4).
 //!
 //! Demonstrates two layers of concurrency control:
 //!
@@ -41,8 +41,9 @@ use crate::services::telegram_service::OtpChannel;
 const MAX_TRANSFERS_PER_WINDOW: usize = 5;
 const RATE_WINDOW: Duration = Duration::from_secs(60);
 
-/// Public result of a successful `create` call. The handler shows the
-/// plaintext OTP on the confirm page (a real bank would SMS it instead).
+/// Public result of a successful `create` call. The code is delivered via the
+/// injected OtpChannel; the plaintext is only surfaced on screen when no
+/// out-of-band channel is configured.
 pub struct TransferCreated {
     pub transfer: Transfer,
     pub otp: String,
@@ -110,14 +111,14 @@ pub struct HeldRow {
     /// NRIC stored on the sender's profile (staff compare against the claim).
     pub nric_on_file: Option<String>,
     pub to_owner: String,
-    /// Review request fields — `None` until the customer submits one.
+    /// Review request fields - `None` until the customer submits one.
     pub purpose: Option<String>,
     pub nric_claimed: Option<String>,
     pub submitted_at: Option<DateTime<Utc>>,
 }
 
 pub struct PgTransferService {
-    // All state is private — handlers depend only on the `TransferService` trait,
+    // All state is private - handlers depend only on the `TransferService` trait,
     // never on these fields. This is the encapsulation boundary.
     db: PgPool,
     audit: Arc<dyn AuditService>,
@@ -144,13 +145,51 @@ impl PgTransferService {
         }
     }
 
+    /// Hijack heuristic: 3+ attempts to send more than the balance within
+    /// 24h looks like an attacker probing a stolen session, so the account
+    /// freezes automatically and the owner is told on every channel.
+    async fn check_overdraft_freeze(&self, actor: i64, account_id: i64) -> Result<(), AppError> {
+        let (overdraft_attempts,): (i64,) = sqlx::query_as(
+            r#"
+            SELECT COUNT(*) FROM transfers
+            WHERE from_account_id = $1 AND status = 'rejected'
+              AND status_reason LIKE 'insufficient funds%'
+              AND created_at > now() - interval '24 hours'
+            "#,
+        )
+        .bind(account_id)
+        .fetch_one(&self.db)
+        .await?;
+        if overdraft_attempts >= 3 {
+            let frozen = sqlx::query(
+                r#"UPDATE accounts SET status = 'frozen' WHERE id = $1 AND status = 'active'"#,
+            )
+            .bind(account_id)
+            .execute(&self.db)
+            .await?;
+            if frozen.rows_affected() > 0 {
+                self.audit
+                    .record(
+                        Some(actor),
+                        "account.frozen.suspected_hijack",
+                        json!({ "account_id": account_id, "overdraft_attempts": overdraft_attempts }),
+                    )
+                    .await?;
+                let msg = "Your account was frozen after repeated attempts to transfer more than its balance. Contact the bank to unfreeze it.";
+                notify(&self.db, actor, msg).await;
+                self.otp_channel.send_note(actor, msg).await;
+            }
+        }
+        Ok(())
+    }
+
     /// Returns `Ok(())` if the account is under the per-minute limit; otherwise
     /// `AppError::Conflict`. Side effect: records this attempt's timestamp.
     async fn check_rate_limit(&self, account_id: i64) -> Result<(), AppError> {
         let now = Instant::now();
         let mut map = self.rate_limit.lock().await;
         let entry = map.entry(account_id).or_default();
-        // Drop timestamps older than the window — keeps the vec bounded.
+        // Drop timestamps older than the window - keeps the vec bounded.
         entry.retain(|t| now.saturating_duration_since(*t) <= RATE_WINDOW);
         if entry.len() >= MAX_TRANSFERS_PER_WINDOW {
             return Err(AppError::Conflict(format!(
@@ -166,7 +205,7 @@ impl PgTransferService {
 
 // ── Internal row used inside the confirm() transaction ──────────────
 //
-// We don't expose otp_hash / confirmed_at on the public Transfer struct —
+// We don't expose otp_hash / confirmed_at on the public Transfer struct -
 // they're implementation details of the OTP simulation.
 #[derive(sqlx::FromRow)]
 struct PendingRow {
@@ -216,7 +255,7 @@ impl TransferService for PgTransferService {
             Some((f, t)) if f != t => {}
             Some(_) => {
                 return Err(AppError::BadRequest(
-                    "you cannot transfer to yourself — the recipient account also belongs to you".into(),
+                    "you cannot transfer to yourself - the recipient account also belongs to you".into(),
                 ))
             }
             None => {
@@ -228,7 +267,7 @@ impl TransferService for PgTransferService {
 
         // ── Per-transfer limit ──────────────────────────────────────────
         // First promote any limit change whose hold window has matured (lazy
-        // application — no background job needed), then enforce the limit.
+        // application - no background job needed), then enforce the limit.
         sqlx::query(
             r#"
             UPDATE accounts a SET transfer_limit = lc.new_limit
@@ -254,14 +293,45 @@ impl TransferService for PgTransferService {
         .execute(&self.db)
         .await?;
 
-        let (limit,): (Decimal,) =
-            sqlx::query_as(r#"SELECT transfer_limit FROM accounts WHERE id = $1"#)
+        let (limit, balance): (Decimal, Decimal) =
+            sqlx::query_as(r#"SELECT transfer_limit, balance FROM accounts WHERE id = $1"#)
                 .bind(from_account_id)
                 .fetch_one(&self.db)
                 .await?;
+        // Insufficient funds is checked BEFORE anything is posted: no OTP is
+        // issued and the attempt never reaches the fraud rules. A rejected row
+        // is still recorded - it feeds the user's history and the hijack
+        // heuristic (3 overdraft attempts in 24h freezes the account).
+        if amount > balance {
+            sqlx::query(
+                r#"
+                INSERT INTO transfers (from_account_id, to_account_id, amount, status, note, status_reason)
+                VALUES ($1, $2, $3, 'rejected', $4, $5)
+                "#,
+            )
+            .bind(from_account_id)
+            .bind(to_account_id)
+            .bind(amount)
+            .bind(note.as_deref())
+            .bind(format!("insufficient funds: balance ${balance} is less than ${amount}"))
+            .execute(&self.db)
+            .await?;
+            self.audit
+                .record(
+                    Some(actor),
+                    "transfer.rejected",
+                    json!({ "reason": "insufficient funds (pre-check)", "amount": amount.to_string() }),
+                )
+                .await?;
+            self.check_overdraft_freeze(actor, from_account_id).await?;
+            return Err(AppError::BadRequest(format!(
+                "insufficient funds: balance ${balance} is less than ${amount}"
+            )));
+        }
+
         if amount > limit {
             return Err(AppError::BadRequest(format!(
-                "amount exceeds this account's per-transfer limit of ${limit} — request a limit increase from the account page"
+                "amount exceeds this account's per-transfer limit of ${limit} - request a limit increase from the account page"
             )));
         }
 
@@ -324,7 +394,7 @@ impl TransferService for PgTransferService {
             tracing::info!(
                 transfer_id = transfer.id,
                 otp = %otp,
-                "transfer created — OTP shown on screen (no Telegram linked)"
+                "transfer created - OTP shown on screen (no Telegram linked)"
             );
         }
 
@@ -372,12 +442,12 @@ impl TransferService for PgTransferService {
                 .record(Some(actor), "transfer.expired", json!({ "transfer_id": transfer_id }))
                 .await?;
             return Err(AppError::Conflict(
-                "the confirmation window has expired — please start the transfer again".into(),
+                "the confirmation window has expired - please start the transfer again".into(),
             ));
         }
 
         // (2) The actor must own the source account. Without this check, any
-        // logged-in user who learned a transfer id could confirm it — or kill
+        // logged-in user who learned a transfer id could confirm it - or kill
         // it by burning OTP attempts. Checked BEFORE OTP verification so a
         // stranger's bad guesses can never flip the transfer to rejected.
         let owner: Option<(i64,)> =
@@ -405,7 +475,7 @@ impl TransferService for PgTransferService {
         {
             let attempts = pending.otp_attempts + 1;
             if attempts >= 3 {
-                // Three strikes: reject the transfer — a fraud signal in itself.
+                // Three strikes: reject the transfer - a fraud signal in itself.
                 mark_rejected(&mut tx, transfer_id, "too many invalid confirmation codes").await?;
                 tx.commit().await?;
                 self.audit
@@ -415,14 +485,8 @@ impl TransferService for PgTransferService {
                         json!({ "transfer_id": transfer_id, "attempts": attempts }),
                     )
                     .await?;
-                notify(
-                    &self.db,
-                    actor,
-                    &format!("Transfer #{transfer_id} was rejected after 3 invalid codes. If this wasn't you, contact the bank immediately."),
-                )
-                .await;
                 return Err(AppError::BadRequest(
-                    "too many invalid codes — the transfer has been rejected".into(),
+                    "too many invalid codes - the transfer has been rejected".into(),
                 ));
             }
             sqlx::query(r#"UPDATE transfers SET otp_attempts = $1 WHERE id = $2"#)
@@ -451,9 +515,9 @@ impl TransferService for PgTransferService {
         } else {
             (pending.to_account_id, pending.from_account_id)
         };
-        let accounts: Vec<(i64, AccountStatus, Decimal)> = sqlx::query_as(
+        let accounts: Vec<(i64, AccountStatus, Decimal, Decimal)> = sqlx::query_as(
             r#"
-            SELECT id, status, balance
+            SELECT id, status, balance, transfer_limit
             FROM accounts
             WHERE id IN ($1, $2)
             ORDER BY id
@@ -471,7 +535,7 @@ impl TransferService for PgTransferService {
             ));
         }
 
-        // unwrap() is safe — we asserted len() == 2 just above.
+        // unwrap() is safe - we asserted len() == 2 just above.
         let from = accounts.iter().find(|a| a.0 == pending.from_account_id).unwrap();
         let to = accounts.iter().find(|a| a.0 == pending.to_account_id).unwrap();
 
@@ -530,42 +594,7 @@ impl TransferService for PgTransferService {
                 )
                 .await?;
 
-            // Hijack heuristic: 3+ attempts to send more than the balance in
-            // 24 h looks like an attacker probing a stolen session -> freeze.
-            let (overdraft_attempts,): (i64,) = sqlx::query_as(
-                r#"
-                SELECT COUNT(*) FROM transfers
-                WHERE from_account_id = $1 AND status = 'rejected'
-                  AND status_reason LIKE 'insufficient funds%'
-                  AND created_at > now() - interval '24 hours'
-                "#,
-            )
-            .bind(pending.from_account_id)
-            .fetch_one(&self.db)
-            .await?;
-            if overdraft_attempts >= 3 {
-                let frozen = sqlx::query(
-                    r#"UPDATE accounts SET status = 'frozen' WHERE id = $1 AND status = 'active'"#,
-                )
-                .bind(pending.from_account_id)
-                .execute(&self.db)
-                .await?;
-                if frozen.rows_affected() > 0 {
-                    self.audit
-                        .record(
-                            Some(actor),
-                            "account.frozen.suspected_hijack",
-                            json!({
-                                "account_id": pending.from_account_id,
-                                "overdraft_attempts": overdraft_attempts,
-                            }),
-                        )
-                        .await?;
-                    let msg = "Your account was frozen after repeated attempts to transfer more than its balance. Contact the bank to unfreeze it.";
-                    notify(&self.db, actor, msg).await;
-                    self.otp_channel.send_note(actor, msg).await;
-                }
-            }
+            self.check_overdraft_freeze(actor, pending.from_account_id).await?;
 
             return Err(reject_with(&format!(
                 "insufficient funds: balance ${} < ${}",
@@ -573,13 +602,18 @@ impl TransferService for PgTransferService {
             )));
         }
 
-        // (5b) Fraud rules — evaluated only on otherwise-payable transfers.
+        // (5b) Fraud rules - evaluated only on otherwise-payable transfers.
         // A match parks the transfer ON HOLD without moving money; the
         // customer submits a purpose + identity claim and staff decide.
         let hold_reason: Option<String> = if pending.amount >= Decimal::from(10_000) {
             Some("large transfer (>= $10,000)".into())
-        } else if pending.amount >= Decimal::from(9_000) {
-            Some("just under $10,000 (possible structuring)".into())
+        } else if from.2 >= Decimal::from(5_000)
+            && pending.amount < from.3
+            && from.2 - pending.amount <= Decimal::from(49)
+        {
+            // Structuring: a sub-limit transfer that empties a sizeable
+            // balance to within $49 - sized to dodge controls.
+            Some("possible structuring: empties the account to within $49 while staying under the limit".into())
         } else if from.2 > Decimal::from(5_000)
             && pending.amount * Decimal::from(2) > from.2
         {
@@ -620,7 +654,7 @@ impl TransferService for PgTransferService {
                 )
                 .await?;
             let msg = format!(
-                "Transfer #{transfer_id} of ${} is ON HOLD ({reason}). It may be flagged as potentially illegitimate — submit the transfer purpose and your NRIC for staff review.",
+                "Your current transfer of ${} is ON HOLD ({reason}). It may be flagged as potentially illegitimate - submit the transfer purpose and your NRIC for staff review.",
                 pending.amount
             );
             notify(&self.db, actor, &msg).await;
@@ -660,7 +694,43 @@ impl TransferService for PgTransferService {
 
         tx.commit().await?;
 
-        // (7) Audit outside the transaction — the audit_log row is its own
+        // Tell both parties who the other side was (toast + Telegram).
+        let parties: Vec<(i64, i64, String)> = sqlx::query_as(
+            r#"
+            SELECT a.id, u.id, u.full_name
+            FROM accounts a JOIN users u ON u.id = a.user_id
+            WHERE a.id IN ($1, $2)
+            "#,
+        )
+        .bind(pending.from_account_id)
+        .bind(pending.to_account_id)
+        .fetch_all(&self.db)
+        .await
+        .unwrap_or_default();
+        let sender_name = parties
+            .iter()
+            .find(|p| p.0 == pending.from_account_id)
+            .map(|p| p.2.clone())
+            .unwrap_or_else(|| "another customer".into());
+        let recipient = parties
+            .iter()
+            .find(|p| p.0 == pending.to_account_id)
+            .cloned();
+
+        let sender_msg = format!(
+            "Your transfer of ${} to {} completed.",
+            pending.amount,
+            recipient.as_ref().map(|p| p.2.as_str()).unwrap_or("the recipient")
+        );
+        notify(&self.db, actor, &sender_msg).await;
+        self.otp_channel.send_note(actor, &sender_msg).await;
+        if let Some((_, recipient_id, _)) = recipient {
+            let msg = format!("You received ${} from {}.", pending.amount, sender_name);
+            notify(&self.db, recipient_id, &msg).await;
+            self.otp_channel.send_note(recipient_id, &msg).await;
+        }
+
+        // (7) Audit outside the transaction - the audit_log row is its own
         //     atomic write and we don't want it blocking the money move.
         self.audit
             .record(
@@ -674,24 +744,6 @@ impl TransferService for PgTransferService {
                 }),
             )
             .await?;
-
-        // Tell both parties (browser toast + Telegram when linked).
-        notify(
-            &self.db,
-            actor,
-            &format!("Transfer #{transfer_id} of ${} completed.", pending.amount),
-        )
-        .await;
-        if let Ok(Some(recipient)) =
-            sqlx::query_scalar::<_, i64>(r#"SELECT user_id FROM accounts WHERE id = $1"#)
-                .bind(pending.to_account_id)
-                .fetch_optional(&self.db)
-                .await
-        {
-            let msg = format!("You received ${} (transfer #{transfer_id}).", pending.amount);
-            notify(&self.db, recipient, &msg).await;
-            self.otp_channel.send_note(recipient, &msg).await;
-        }
 
         Ok(Transfer {
             id: pending.id,
@@ -819,7 +871,7 @@ impl TransferService for PgTransferService {
             ));
         }
 
-        // Same locked re-checks as confirm — the world may have changed.
+        // Same locked re-checks as confirm - the world may have changed.
         let (low, high) = if pending.from_account_id < pending.to_account_id {
             (pending.from_account_id, pending.to_account_id)
         } else {
@@ -873,18 +925,38 @@ impl TransferService for PgTransferService {
         self.audit
             .record(Some(reviewer), "transfer.released", json!({ "transfer_id": transfer_id }))
             .await?;
-        if let Ok(Some(owner)) =
-            sqlx::query_scalar::<_, i64>(r#"SELECT user_id FROM accounts WHERE id = $1"#)
-                .bind(pending.from_account_id)
-                .fetch_optional(&self.db)
-                .await
-        {
+        // Tell both parties, with names - money moved on release.
+        let parties: Vec<(i64, i64, String)> = sqlx::query_as(
+            r#"
+            SELECT a.id, u.id, u.full_name
+            FROM accounts a JOIN users u ON u.id = a.user_id
+            WHERE a.id IN ($1, $2)
+            "#,
+        )
+        .bind(pending.from_account_id)
+        .bind(pending.to_account_id)
+        .fetch_all(&self.db)
+        .await
+        .unwrap_or_default();
+        let sender = parties.iter().find(|p| p.0 == pending.from_account_id).cloned();
+        let recipient = parties.iter().find(|p| p.0 == pending.to_account_id).cloned();
+        if let Some((_, sender_id, _)) = sender.as_ref() {
             let msg = format!(
-                "Good news — your held transfer #{transfer_id} of ${} was reviewed and released.",
-                pending.amount
+                "Good news - your held transfer of ${} to {} was reviewed and released.",
+                pending.amount,
+                recipient.as_ref().map(|p| p.2.as_str()).unwrap_or("the recipient")
             );
-            notify(&self.db, owner, &msg).await;
-            self.otp_channel.send_note(owner, &msg).await;
+            notify(&self.db, *sender_id, &msg).await;
+            self.otp_channel.send_note(*sender_id, &msg).await;
+        }
+        if let Some((_, recipient_id, _)) = recipient.as_ref() {
+            let msg = format!(
+                "You received ${} from {}.",
+                pending.amount,
+                sender.as_ref().map(|p| p.2.as_str()).unwrap_or("another customer")
+            );
+            notify(&self.db, *recipient_id, &msg).await;
+            self.otp_channel.send_note(*recipient_id, &msg).await;
         }
         Ok(())
     }
@@ -915,14 +987,14 @@ impl TransferService for PgTransferService {
                 json!({ "transfer_id": transfer_id, "reason": reason }),
             )
             .await?;
-        if let Ok(Some(owner)) = sqlx::query_scalar::<_, i64>(
-            r#"SELECT a.user_id FROM accounts a JOIN transfers t ON t.from_account_id = a.id WHERE t.id = $1"#,
+        if let Ok(Some((owner, amount))) = sqlx::query_as::<_, (i64, Decimal)>(
+            r#"SELECT a.user_id, t.amount FROM accounts a JOIN transfers t ON t.from_account_id = a.id WHERE t.id = $1"#,
         )
         .bind(transfer_id)
         .fetch_optional(&self.db)
         .await
         {
-            let msg = format!("Your held transfer #{transfer_id} was denied after review: {reason}");
+            let msg = format!("Your held transfer of ${amount} was denied after review: {reason}");
             notify(&self.db, owner, &msg).await;
             self.otp_channel.send_note(owner, &msg).await;
         }

@@ -1,4 +1,4 @@
-//! Loan model — owned by the Loans module (Member 5).
+//! Loan model - owned by the Loans module (Member 5).
 
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};

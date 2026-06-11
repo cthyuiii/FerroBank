@@ -7,7 +7,7 @@ A server-side-rendered banking platform for **CSC1106 Web Programming**
 out-of-band OTPs via Telegram, fraud holds with identity review, and a full
 audit trail.
 
-> **Group / author info** — to be filled in by the group leader before submission:
+> **Group / author info** - to be filled in by the group leader before submission:
 >
 > - Group Number: `g##`
 > - Members: `Name 1 (SIT ID)`, `Name 2 (SIT ID)`, `Name 3 (SIT ID)`, `Name 4 (SIT ID)`, `Name 5 (SIT ID)`
@@ -45,7 +45,7 @@ Browser ──HTTP──▶ SessionMiddleware ─▶ ActivityGuard ─▶ Requir
 Handlers parse and render; **all business rules live behind service traits**
 (`AuthService`, `AccountService`, `TransferService`, `LoanService`,
 `ActionOtpService`, `AuditService`, `AdminService`), consumed as
-`Arc<dyn Trait>` — encapsulation, abstraction, and runtime polymorphism.
+`Arc<dyn Trait>` - encapsulation, abstraction, and runtime polymorphism.
 `ActivityGuard` adds a per-user request trail, the 5-minute inactivity TTL
 (measured on database time), and mandatory Telegram linking for customers.
 
@@ -58,7 +58,7 @@ narrative in **[docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md)**.
 ## File layout
 
 ```
-migrations/        001–007, one per module (users · accounts · transfers ·
+migrations/        001-007, one per module (users · accounts · transfers ·
                    audit+notifications · loans · repayments · action_otps)
 src/
   main.rs          wiring: config, pool, services, middleware, shutdown snapshot
@@ -80,7 +80,7 @@ docs/              architecture, flows, UML/ER, demo scenarios, runsheet,
 
 ## Running FerroBank
 
-All options serve <http://localhost:8080>. **Docker is optional** — choose A
+All options serve <http://localhost:8080>. **Docker is optional** - choose A
 if you don't want it at all.
 
 ### Prerequisites
@@ -91,7 +91,7 @@ if you don't want it at all.
 | PostgreSQL 16 | native install | via Docker | via Docker |
 | Docker Desktop | **not needed** | required | required (DB only) |
 
-### Option A — Fully local (no Docker)
+### Option A - Fully local (no Docker)
 
 ```bash
 # macOS (Homebrew)
@@ -102,7 +102,7 @@ psql -d ferrobank -c "ALTER USER ferrobank WITH PASSWORD 'ferrobank';"
 ```
 
 ```powershell
-# Windows — installer from postgresql.org, then in "SQL Shell (psql)":
+# Windows - installer from postgresql.org, then in "SQL Shell (psql)":
 CREATE ROLE ferrobank WITH LOGIN PASSWORD 'ferrobank' CREATEDB;
 CREATE DATABASE ferrobank OWNER ferrobank;
 ```
@@ -114,9 +114,24 @@ cp .env.example .env     # set SESSION_SECRET (openssl rand -base64 64) + TELEGR
 cargo run --bin seed && cargo run
 ```
 
-Reset from scratch: `dropdb ferrobank && createdb ferrobank --owner=ferrobank`, reseed.
+### Restarting (Option A)
 
-### Option B — Docker (full stack)
+```bash
+# Restart the server only - all data kept (Ctrl-C the old one first).
+# Note: restarting logs everyone out (per-boot session keys), sign in again.
+cargo run
+
+# Full reset: wipe the database, reseed, and run again in one line.
+dropdb ferrobank && createdb ferrobank --owner=ferrobank && cargo run --bin seed && cargo run
+
+# If Postgres itself isn't running (e.g. after a reboot):
+brew services restart postgresql@16
+```
+
+If `dropdb` complains the database is "being accessed by other users", close
+any open psql sessions (`\q`) and stop the server first.
+
+### Option B - Docker (full stack)
 
 ```bash
 cp .env.example .env
@@ -125,7 +140,7 @@ docker compose up --build      # db + app + one-shot idempotent seed
 
 Wipe and reseed: `docker compose down -v && docker compose up --build`.
 
-### Option C — Local app + Docker Postgres
+### Option C - Local app + Docker Postgres
 
 ```bash
 docker compose up -d db
@@ -138,8 +153,8 @@ cargo run --bin seed && cargo run
 Create a bot with **@BotFather** (`/newbot`), put the token in `.env` as
 `TELEGRAM_BOT_TOKEN`, restart. Customers are then **required** to link
 Telegram after first sign-in (guide page with a deep link; it refreshes
-itself when the bot confirms). Every one-time code — transfers, account
-opening, loan applications, profile changes — and every account update
+itself when the bot confirms). Every one-time code - transfers, account
+opening, loan applications, profile changes - and every account update
 (approvals, holds, declines, freezes) is delivered there; codes never appear
 on screen for linked users. Bot commands: `/unlink`, `/help`. Without a
 token the app falls back to on-screen demo codes.
@@ -159,18 +174,34 @@ All passwords follow `<name>123`. Customers have NRICs on file; staff have none.
 | `eve@ferrobank.local` | Customer | savings $7,500 + checking $1,500 |
 | `frank@ferrobank.local` | Customer | checking $600 |
 
-Plus seeded loans and historical transfers that trip every fraud rule
-(structuring $9,999 · large $12,500 · a rejection · a velocity burst).
+Plus seeded loans and historical transfers that exercise the fraud panel
+(large $12,500 · a flagged rejection · a velocity burst).
 
 ## Security controls (quick reference)
 
 - OTP on **every** sensitive action (argon2-hashed, single-use, 10-min TTL, 3 strikes)
 - No self-transfers (service check + DB trigger)
 - Per-transfer limits; increases held 12 h (consent popup) before applying
-- Fraud holds: ≥$10k, $9k–10k structuring, >50% drain of a >$5k balance,
-  4+/1 h velocity → customer states purpose + NRIC → staff release/deny
+- Fraud holds: >=$10k, structuring (sub-limit transfer emptying a >=$5k
+  balance to within $49), >50% drain of a >$5k balance, 4+/1h velocity;
+  customer states purpose + NRIC, staff release/deny (insufficient funds is
+  pre-checked, never flagged)
+- Dual-control balance adjustments: staff edits over $1,000 need approval
+  from the other staff role
 - Auto-freeze after 3 overdraft attempts in 24 h (suspected hijack)
 - 5-minute inactivity TTL on database time; per-user request trail in the log
+- Login device tracking: browser + IP per sign-in, first-seen device/network
+  alerts the customer, and staff get a per-user activity view
+- Risk-based step-up login: a first-seen device or network must also present
+  a one-time code before any session is created (known origins stay
+  password-only; the very first login is exempt); 3 wrong codes cancel the
+  attempt AND block that device/network from signing in for 24 hours
+- Every action OTP carries the same 3-strike budget - the third wrong code
+  cancels the pending action outright
+- Hardened unlink: the bot's /unlink takes effect after 24 h with warnings
+  everywhere, cancellable from the website (which an attacker inside a stolen
+  Telegram cannot reach); the website's OTP-confirmed unlink stays immediate
+  (`/staff/users/{id}`: logins, accounts, transfers)
 - Pending loans expire after 7 days; graceful shutdown writes a state snapshot
 
 ## Testing

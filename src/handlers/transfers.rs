@@ -1,4 +1,4 @@
-//! Transfers handlers — owned by the Transfers module (Member 4).
+//! Transfers handlers - owned by the Transfers module (Member 4).
 //!
 //! Two-step flow:
 //!   GET  /transfers           → user's transfer history
@@ -6,8 +6,8 @@
 //!   POST /transfers/new       → create pending row + render confirm page (with OTP)
 //!   POST /transfers/confirm   → verify OTP, move money inside one SQL txn, redirect
 //!
-//! The OTP is displayed on screen for the demo; in production it would be sent
-//! by SMS via something like Twilio. See ARCHITECTURE.md.
+//! One-time codes are delivered to the sender's linked Telegram; the on-screen
+//! code only appears when no Telegram bot is configured (demo fallback).
 
 use actix_web::{web, HttpResponse};
 use askama::Template;
@@ -33,7 +33,8 @@ pub fn routes(cfg: &mut web::ServiceConfig) {
             .route("/new", web::post().to(create))
             .route("/confirm", web::post().to(confirm))
             .route("/{id}/review", web::get().to(review_form))
-            .route("/{id}/review", web::post().to(review_submit)),
+            .route("/{id}/review", web::post().to(review_submit))
+            .route("/{id}/status", web::get().to(status)),
     );
 }
 
@@ -64,6 +65,8 @@ struct AccountOption {
 #[template(path = "transfers/confirm.html")]
 struct ConfirmTemplate {
     layout: LayoutCtx,
+    /// Inline error (e.g. an invalid code) shown on the same page.
+    error: Option<String>,
     transfer: Transfer,
     /// Recipient account number (as typed) and resolved owner name, so the
     /// sender can verify who they're paying before confirming.
@@ -82,7 +85,7 @@ struct HistoryTemplate {
 }
 
 /// One history row, pre-resolved to human-readable details so the customer view
-/// never shows raw account/user ids — just the counterparty's name and the
+/// never shows raw account/user ids - just the counterparty's name and the
 /// account that sent or received the money.
 struct HistoryRow {
     id: i64,
@@ -289,7 +292,7 @@ async fn create(
     }
 
     // Resolve recipient account number → id. We do this directly via the pool
-    // rather than extend AccountService — it's a single lookup specific to
+    // rather than extend AccountService - it's a single lookup specific to
     // the transfer flow and isn't worth adding to Member 3's trait.
     let to_account_number = form.to_account_number.trim();
     let to_id: Option<(i64,)> = sqlx::query_as(
@@ -338,10 +341,11 @@ async fn create(
     };
 
     // Render the confirm page directly so we can show the OTP once. Breaks PRG
-    // by design — refreshing the confirm page just re-renders it, since money
+    // by design - refreshing the confirm page just re-renders it, since money
     // hasn't moved yet.
     render(ConfirmTemplate {
         layout: LayoutCtx::from_user(Some(&user)),
+        error: None,
         transfer: created.transfer,
         to_account_number: to_account_number.to_string(),
         to_owner_name,
@@ -356,10 +360,42 @@ async fn create(
 async fn confirm(
     form: web::Form<ConfirmForm>,
     svc: web::Data<dyn TransferService>,
+    state: web::Data<AppState>,
     user: CurrentUser,
 ) -> Result<HttpResponse, AppError> {
     let form = form.into_inner();
-    let transfer = svc.confirm(user.id, form.transfer_id, form.otp.trim()).await?;
+    let transfer = match svc.confirm(user.id, form.transfer_id, form.otp.trim()).await {
+        Ok(t) => t,
+        // Wrong code with attempts left: stay on the confirm page and say so.
+        Err(AppError::BadRequest(msg)) if msg.starts_with("invalid confirmation code") => {
+            let transfer = svc.get_for_owner(user.id, form.transfer_id).await?;
+            let (to_account_number, to_owner_name): (String, String) = sqlx::query_as(
+                r#"
+                SELECT a.account_number, u.full_name
+                FROM accounts a JOIN users u ON u.id = a.user_id
+                WHERE a.id = $1
+                "#,
+            )
+            .bind(transfer.to_account_id)
+            .fetch_one(&state.db)
+            .await?;
+            return render(ConfirmTemplate {
+                layout: LayoutCtx::from_user(Some(&user)),
+                error: Some(msg),
+                transfer,
+                to_account_number,
+                to_owner_name,
+                demo_otp: None,
+            });
+        }
+        // Lockout / expiry / already-processed: the transfer is settled.
+        Err(AppError::BadRequest(_)) | Err(AppError::Conflict(_)) => {
+            return Ok(HttpResponse::Found()
+                .insert_header(("Location", "/transfers"))
+                .finish());
+        }
+        Err(other) => return Err(other),
+    };
 
     // Fraud rules may have parked it: send the user to the review form so
     // they can state the purpose and prove their identity.
@@ -436,6 +472,17 @@ async fn review_submit(
         }
         Err(other) => Err(other),
     }
+}
+
+/// Live status for the review page's auto-redirect: the moment staff release
+/// or deny the held transfer, the page leaves on its own.
+async fn status(
+    path: web::Path<i64>,
+    svc: web::Data<dyn TransferService>,
+    user: CurrentUser,
+) -> Result<HttpResponse, AppError> {
+    let t = svc.get_for_owner(user.id, path.into_inner()).await?;
+    Ok(HttpResponse::Ok().json(serde_json::json!({ "status": t.status.label() })))
 }
 
 // ── Render helper ────────────────────────────────────────────────────

@@ -1,7 +1,7 @@
-//! User model — owned by the Auth module (Member 2).
+//! User model - owned by the Auth module (Member 2).
 //!
 //! The `Role` enum is also referenced by the Platform Lead's auth middleware,
-//! so its variants are part of the cross-module contract — don't rename them
+//! so its variants are part of the cross-module contract - don't rename them
 //! without coordinating in the team chat.
 
 use serde::{Deserialize, Serialize};
@@ -63,7 +63,7 @@ pub struct NewUser {
     pub first_name: String,
     pub middle_name: Option<String>,
     pub last_name: String,
-    /// National ID — customers only; staff registrations pass `None`.
+    /// National ID - customers only; staff registrations pass `None`.
     pub nric: Option<String>,
     pub role: Role,
 }

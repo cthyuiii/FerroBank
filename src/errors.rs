@@ -90,7 +90,7 @@ impl ResponseError for AppError {
             AppError::NotFound(m) => ("Not Found", m.as_str()),
             AppError::Forbidden => (
                 "You're not supposed to be here",
-                "You don't have access to this page. If you think you should, sign in with the right account — or head back to safety.",
+                "You don't have access to this page. If you think you should, sign in with the right account - or head back to safety.",
             ),
             AppError::BadRequest(m) => ("Bad Request", m.as_str()),
             AppError::Conflict(m) => ("Conflict", m.as_str()),
@@ -124,11 +124,11 @@ pub fn forbidden_page() -> HttpResponse {
         status: 403,
         title: "You're not supposed to be here",
         message: "You don't have access to this page. If you think you should, \
-                  sign in with the right account — or head back to safety.",
+                  sign in with the right account - or head back to safety.",
     }
     .render()
     .unwrap_or_else(|_| {
-        "403 — you're not supposed to be here (no access to this page)".to_string()
+        "403 - you're not supposed to be here (no access to this page)".to_string()
     });
     HttpResponse::Forbidden()
         .content_type("text/html; charset=utf-8")

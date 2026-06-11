@@ -7,9 +7,8 @@
   <span class="text-xs font-semibold uppercase tracking-wider text-purple-700">Transfers · Security review</span>
   <h1 class="text-3xl font-semibold text-stone-900 mt-1">This transfer is on hold</h1>
   <p class="mt-2 text-sm text-stone-600">
-    Our fraud rules flagged transfer <span class="font-mono">#{{ transfer.id }}</span>
-    as potentially illegitimate. <strong>No money has moved.</strong> Tell us the
-    purpose of this transfer and confirm your identity — a member of staff will
+    Our fraud rules flagged your current transfer as potentially illegitimate. <strong>No money has moved.</strong> Tell us the
+    purpose of this transfer and confirm your identity - a member of staff will
     review it and release or decline it. You'll be notified of the outcome.
   </p>
 
@@ -61,4 +60,21 @@
     </form>
   {% endif %}
 </section>
+
+<!-- Auto-redirect: once staff release or deny this transfer, leave the page. -->
+<script>
+  (function () {
+    var timer = setInterval(function () {
+      fetch('/transfers/{{ transfer.id }}/status', { credentials: 'same-origin' })
+        .then(function (r) { return r.json(); })
+        .then(function (s) {
+          if (s && s.status && s.status !== 'On hold') {
+            clearInterval(timer);
+            window.location.href = '/transfers';
+          }
+        })
+        .catch(function () {});
+    }, 4000);
+  })();
+</script>
 {% endblock %}

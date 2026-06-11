@@ -1,4 +1,4 @@
-//! Audit service — owned by the Transfers module (Member 4).
+//! Audit service - owned by the Transfers module (Member 4).
 //!
 //! Append-only log of important financial and security events. Other modules
 //! (transfers, loans, admin actions) call `record(...)` after every state change
@@ -95,7 +95,7 @@ impl AuditService for PgAuditService {
 /// `main` calls this after the HTTP server finishes its graceful shutdown
 /// (Ctrl-C / SIGTERM / `docker compose stop`), so the last audit row always
 /// records the state the server last saw. A *hard* crash (kill -9, power
-/// loss) can't run anything — but no data is lost there either: every
+/// loss) can't run anything - but no data is lost there either: every
 /// committed transaction is already durable via PostgreSQL's WAL. This row is
 /// a forensic/ops marker, not a recovery mechanism.
 ///
@@ -157,7 +157,7 @@ pub async fn snapshot_system_state(conn: &mut sqlx::PgConnection) -> Result<(), 
 // Lightweight per-user messages surfaced as browser toasts (layout.html
 // polls /notifications) and mirrored to Telegram when the user is linked.
 
-/// Queue a notification for a user. Failures are logged, never fatal — a
+/// Queue a notification for a user. Failures are logged, never fatal - a
 /// missed toast must not break a money movement.
 pub async fn notify(db: &PgPool, user_id: i64, message: &str) {
     if let Err(e) = sqlx::query(r#"INSERT INTO notifications (user_id, message) VALUES ($1, $2)"#)

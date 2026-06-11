@@ -1,4 +1,4 @@
-# FerroBank — Architecture
+# FerroBank - Architecture
 
 How the pieces fit together. See **[docs/uml_domain_model.mermaid](./docs/uml_domain_model.mermaid)**
 and **[docs/uml_service_architecture.mermaid](./docs/uml_service_architecture.mermaid)** for the
@@ -22,7 +22,7 @@ Browser
 PostgreSQL
 ```
 
-Handlers are **thin** (parse input, call a service, render). Services are **thick** —
+Handlers are **thin** (parse input, call a service, render). Services are **thick** -
 all business rules and transactions live there. Models are SQLx-typed structs.
 
 ---
@@ -34,8 +34,8 @@ concurrency safety (Arc/Mutex)**. Mapping each to the code:
 
 | Concept | Where it lives |
 |---|---|
-| **Encapsulation** | Each `Pg…Service` keeps its fields **private** (`db`, `audit`, `rate_limit`, the admin's injected services). Callers only touch the trait methods — they know nothing about SQL or the pool. Internal-only details (`otp_hash`, the `PendingRow`, `hash_password`) are never exposed on public types. |
-| **Traits (abstraction / shared interface)** | Six service traits — `AuthService`, `AccountService`, `TransferService`, `LoanService`, `AuditService`, `AdminService` — define behaviour; `Pg…` structs implement it. Traits as shared interfaces — the classic Rust abstraction pattern. |
+| **Encapsulation** | Each `Pg…Service` keeps its fields **private** (`db`, `audit`, `rate_limit`, the admin's injected services). Callers only touch the trait methods - they know nothing about SQL or the pool. Internal-only details (`otp_hash`, the `PendingRow`, `hash_password`) are never exposed on public types. |
+| **Traits (abstraction / shared interface)** | Six service traits - `AuthService`, `AccountService`, `TransferService`, `LoanService`, `AuditService`, `AdminService` - define behaviour; `Pg…` structs implement it. Traits as shared interfaces - the classic Rust abstraction pattern. |
 | **Polymorphism** | *Dynamic dispatch:* services are used as `Arc<dyn Trait>` / `web::Data<dyn Trait>`, so handlers depend on the abstraction and an impl is swappable (e.g. a mock in tests). *Parametric:* `fn render<T: Template>(t: T)`. *Ad-hoc:* enums (`Role`, `AccountStatus`, …) carry behaviour via `impl` (`label()`, `badge()`). |
 | **Inheritance (Rust-style)** | Traits use **supertraits** (`pub trait TransferService: Send + Sync`). Rust has no class inheritance; trait composition + the `AdminService` *composing* the other services (`with_services(...)`) is the idiomatic substitute. |
 | **Concurrency (Arc + Mutex)** | The transfer engine holds an `Arc`-shared, `tokio::sync::Mutex`-guarded rate-limit map, layered on top of database row locks (below). |
@@ -48,7 +48,7 @@ account variety with an **`AccountType` enum** plus behaviour in `AccountService
 (layered architecture), and gets its polymorphism at the **service layer** via
 `dyn` traits instead. Both are valid OOP; the difference is *where* the polymorphism
 sits. (If subtype-style polymorphism is wanted explicitly, a small `AccountKind`
-trait implemented by per-type structs can be added — see the README's roadmap.)
+trait implemented by per-type structs can be added - see the README's roadmap.)
 
 ### Mapping to the four core banking objects
 
@@ -56,7 +56,7 @@ trait implemented by per-type structs can be added — see the README's roadmap.
 |---|---|
 | `BankAccount` (id, owner, balance, status) | `models::account::Account` + `AccountService` (open/approve/freeze/close/adjust/balance) |
 | `MoneyTransfer` (from, to, amount, status, timestamp) | `models::transfer::Transfer` + `TransferService` (create → confirm) |
-| `TransferEngine` (accounts, logs, rules) | `PgTransferService` — the engine: Mutex rate-limiter + `FOR UPDATE` row locks + fraud/business rules + audit |
+| `TransferEngine` (accounts, logs, rules) | `PgTransferService` - the engine: Mutex rate-limiter + `FOR UPDATE` row locks + fraud/business rules + audit |
 | `AuditLog` (transfer_id, action, timestamp, result) | `models`/`AuditService` `audit_log` table, written on every state change |
 
 ---
@@ -111,20 +111,20 @@ Post-login routing: admin → `/admin/dashboard`, teller → `/loans`, customer 
 
 ## Stable surface (the platform contract)
 
-### `AppState` — `web::Data<AppState>`
+### `AppState` - `web::Data<AppState>`
 ```rust
 pub struct AppState { pub db: PgPool, pub config: Arc<Config> }
 ```
 
-### `AppError` — one error type, implements `ResponseError`
+### `AppError` - one error type, implements `ResponseError`
 `NotFound | Unauthorized | Forbidden | BadRequest | Conflict | Internal`. `?` maps it to the
 right HTTP status (and `Unauthorized` redirects to `/login`). Has `From<sqlx::Error>` etc.
 
-### `CurrentUser` — extractor
+### `CurrentUser` - extractor
 Drop into a handler to require login; use `Option<CurrentUser>` for "maybe logged in" (e.g. the
 landing page). Missing/invalid session → `AppError::Unauthorized` → redirect to `/login`.
 
-### `RequireRole(Role)` — scope guard, applied with `.wrap(...)`
+### `RequireRole(Role)` - scope guard, applied with `.wrap(...)`
 ```rust
 web::scope("/admin").wrap(RequireRole(Role::Admin)) // admin only
 web::scope("/staff").wrap(RequireRole(Role::Teller)) // teller + admin
@@ -142,7 +142,7 @@ pub trait AccountService: Send + Sync {
     // ...
 }
 
-pub struct PgAccountService { db: PgPool }   // private field — encapsulated
+pub struct PgAccountService { db: PgPool }   // private field - encapsulated
 
 #[async_trait::async_trait]
 impl AccountService for PgAccountService { /* SQLx queries */ }
@@ -160,7 +160,7 @@ the others are injected via `with_services(...)`.
 - Foreign keys `<table>_id BIGINT REFERENCES <table>(id)`.
 - Money is `NUMERIC(18,2)` ↔ `rust_decimal::Decimal` (never `f64`).
 - Queries use **runtime** `sqlx::query` / `sqlx::query_as` (no compile-time macros, so no live DB
-  or `.sqlx` cache is needed to build — see the Dockerfile).
+  or `.sqlx` cache is needed to build - see the Dockerfile).
 - Migrations live in `migrations/` and are applied automatically on startup by both the app and
   the seed binary.
 

@@ -7,8 +7,8 @@
   <span class="text-xs font-semibold uppercase tracking-wider text-amber-700">Settings · Security</span>
   <h1 class="text-3xl font-semibold text-stone-900 mt-1">One-time codes in Telegram</h1>
   <p class="mt-2 text-sm text-stone-600">
-    Link your Telegram account and every one-time code — for transfers, account
-    opening, loan applications, and profile changes — is sent to your phone.
+    Link your Telegram account and every one-time code - for transfers, account
+    opening, loan applications, and profile changes - is sent to your phone.
     You'll also receive <strong>updates about your account here</strong>:
     account approvals, transfer outcomes, holds, and loan decisions.
   </p>
@@ -20,6 +20,24 @@
       appear on screen during transfers.
     </div>
   {% else if linked %}
+    {% if let Some(due) = pending_unlink %}
+      <div class="mt-6 p-4 rounded-lg border border-red-300 bg-red-50">
+        <div class="text-sm font-semibold text-red-700">⚠ Unlink scheduled from your Telegram chat</div>
+        <p class="mt-1 text-sm text-stone-700">
+          This link will be removed at
+          <time data-utc="{{ due.to_rfc3339() }}">{{ due.format("%Y-%m-%d %H:%M") }} UTC</time>
+          (your local time). If you didn't request this, cancel it now and
+          change your password - someone may have access to your Telegram.
+        </p>
+        <form action="/settings/telegram/unlink/cancel" method="POST" class="mt-3"
+              onsubmit="return fbConfirmSubmit(this, 'Cancel the scheduled unlink and keep receiving codes and alerts in Telegram?');">
+          <button type="submit"
+                  class="px-4 py-2 rounded-md bg-red-700 text-white text-sm font-medium hover:bg-red-800 transition">
+            Cancel the unlink
+          </button>
+        </form>
+      </div>
+    {% endif %}
     <div class="mt-6 p-5 rounded-lg border border-emerald-200 bg-emerald-50">
       <div class="text-sm font-semibold text-emerald-700">✓ Telegram linked</div>
       <p class="mt-1 text-sm text-stone-700">
@@ -31,9 +49,9 @@
        class="mt-4 inline-block px-5 py-2.5 rounded-md bg-amber-700 text-white font-medium hover:bg-amber-800 transition">
       Continue to my accounts →
     </a>
-    <form action="/settings/telegram/unlink" method="POST" class="mt-4">
+    <form action="/settings/telegram/unlink" method="POST" class="mt-4"
+          onsubmit="return fbConfirmSubmit(this, 'Unlinking requires one last code sent to this Telegram. Continue?');">
       <button type="submit"
-              onclick="return confirm('Unlinking requires one last code sent to this Telegram. Continue?');"
               class="px-4 py-2 rounded-md border border-stone-300 text-sm text-stone-700 hover:border-red-300 hover:text-red-700 transition">
         Unlink Telegram
       </button>
@@ -76,11 +94,11 @@
         and sign in with your phone number.
       </li>
       <li>
-        Tap the button below — it opens our bot in Telegram with a single-use
+        Tap the button below - it opens our bot in Telegram with a single-use
         link code already filled in.
       </li>
       <li>Press <strong>Start</strong> in the chat. The bot replies “Linked!”.</li>
-      <li>Come back here and refresh — this page will show the link as active.</li>
+      <li>Come back here and refresh - this page will show the link as active.</li>
     </ol>
 
     {% if let Some(url) = link_url %}
