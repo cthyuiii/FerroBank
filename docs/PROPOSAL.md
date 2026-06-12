@@ -113,7 +113,7 @@ attempts from known origins) are stated in section 7 rather than hidden.
 
 Askama templates (compile-time checked) under one shared layout with reusable
 partials; Tailwind via CDN with a custom dark mode; HTMX-progressive forms.
-Light JavaScript is used only where SSR cannot reach: themed confirmation
+Light JavaScript is used only where SSR cannot reach: confirmation
 modals, toast notifications polled from the server, local-time rendering of
 held limit changes, and per-item status polls that auto-refresh pending pages
 the moment staff act.

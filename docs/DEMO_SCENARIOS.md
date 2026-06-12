@@ -220,6 +220,118 @@ Charlie (velocity). Structuring is balance-relative now, so it's demoed live
 
 ---
 
+## Scenario 13 - Mandatory Telegram linking
+
+**Goal:** show that a customer cannot use the bank at all until an out-of-band channel exists.
+
+1. Register a fresh customer - the form asks **First / Middle (optional) / Last name and NRIC**.
+2. The page confirms registration and sends you to sign in (no auto-login).
+3. Sign in. You are routed straight to the **Telegram linking guide** - and every other page redirects back here until linked (only Settings, logout, and notifications are reachable).
+4. Click **Open Telegram & link my account** - the bot opens with a single-use code pre-filled; press Start.
+5. The linking page polls and refreshes itself the instant the bot confirms. You're in.
+6. From now on, every one-time code arrives on the phone; nothing appears on screen.
+
+**Point out:** the enforcement lives in `ActivityGuard` middleware, so no handler can forget it; the deep-link code is single-use; the page polls `/settings/telegram/status` rather than asking the user to refresh.
+
+---
+
+## Scenario 14 - Transfer limit with hold window
+
+**Goal:** show user-controlled limits where increases cool off before applying.
+
+1. Sign in as **alice**, open one of her accounts. The **Transfer limit** card shows the current per-transfer limit.
+2. Request an *increase*. A consent popup warns that increases are held before they apply. Confirm, then enter the one-time code (limit changes are OTP-gated).
+3. The page shows the pending change with the moment it takes effect **in your local time**. Normally that's 12 hours; alice is seeded to **10 seconds** so it can be waited out on camera.
+4. Before maturity, try a transfer above the OLD limit - it is still refused (the old limit applies until the hold matures).
+5. After 10 seconds, refresh and send the same transfer - it now passes.
+6. Request a *decrease* - it applies immediately, no hold.
+
+**Point out:** matured changes are promoted lazily on every account read and before every transfer (no background job needed), and the asymmetry - tightening is instant, loosening waits - is exactly how real banks treat risk-increasing changes.
+
+---
+
+## Scenario 15 - Fraud hold + identity review
+
+**Goal:** show a suspicious transfer being parked, the customer proving identity, and staff deciding.
+
+1. Sign in as **eve** (savings $7,500). Create a transfer that drains more than half the balance (e.g. $4,000), confirm with the OTP.
+2. Instead of completing, the transfer lands **on hold** - no money has moved - and eve is told her transfer needs review, with a toast and a Telegram message.
+3. The review page asks for the **purpose** of the transfer and her **NRIC**; submit both. The page polls status every few seconds.
+4. Sign in as **teller** (or admin) → **Transfers** → the held-transfers queue. The claim shows the stated purpose and NRIC **beside the NRIC on file**, so identity is a visual match.
+5. **Release** it - the locked re-checks run, money moves, both parties get named notifications. (Or **deny** with a reason - the sender is told.)
+
+**Point out:** the four rules (>= $10k, structuring, >50% drain of a >$5k balance, 4+ transfers/hour) are evaluated under the same row locks as the money move, so a hold can never race a completion; insufficient funds is pre-checked at creation and never reaches review.
+
+---
+
+## Scenario 16 - Hijack freeze (3 overdraft attempts)
+
+**Goal:** show the automatic defense against an attacker probing a compromised account.
+
+1. Sign in as a customer with a small balance (e.g. **frank**, $600).
+2. Attempt a transfer larger than the balance - it is rejected at the create step ("insufficient funds") and a rejected row is recorded. No OTP is ever issued.
+3. Repeat twice more within 24 hours (different amounts are fine).
+4. On the third rejection the account is **frozen automatically** and the owner gets a toast + Telegram alert explaining why.
+5. Any further transfer attempt from that account fails with "source account is frozen". Staff unfreeze it from the accounts page once the owner is verified.
+
+**Point out:** repeated overdraft attempts are a hijack signature (an attacker doesn't know the balance); the counter is per-account over a rolling 24 hours, and the freeze + alert are audited.
+
+---
+
+## Scenario 17 - Inactivity timeout
+
+**Goal:** show the server-side session TTL.
+
+1. Sign in as any user and leave the tab idle for 5 minutes.
+2. Click anything - you are back at the login page with "signed out after 5 minutes of inactivity".
+3. (For a faster recording, shrink the interval in `ActivityGuard` beforehand.)
+4. Sign in again - the timer resets (login refreshes `last_activity_at`).
+
+**Point out:** the TTL is enforced on **database time**, not in the browser - clearing cookies or freezing the client clock cannot bypass it - and every authenticated request is logged with user id, method, and path, which is what feeds the per-user activity trail.
+
+---
+
+## Scenario 18 - OTP discipline everywhere (profile changes + 3 strikes)
+
+**Goal:** show that the same one-time-code guard protects every sensitive action, with a uniform wrong-code budget.
+
+1. Sign in as a linked customer → **Settings**. Change the **email** - a code arrives in Telegram; enter it and the change applies. Repeat for **password**.
+2. Now start any OTP-gated action (a transfer is easiest) and type a **wrong code**. The page re-renders inline with "invalid confirmation code (attempt 1 of 3)" - no progress lost.
+3. Type two more wrong codes. On the third, the pending action is **cancelled outright** ("too many invalid codes").
+4. Start again with the right code to show recovery is just re-initiating.
+
+**Point out:** one shared `ActionOtpService` guards account opening, loan applications, limit changes, profile changes, unlinking, and risky logins; codes are argon2-hashed at rest, single-use, expire in 10 minutes, and the 3-strike budget is identical everywhere.
+
+---
+
+## Scenario 19 - Login device tracking
+
+**Goal:** show per-login device intelligence and the staff investigation view.
+
+1. Sign in as **alice** from your usual browser - nothing special happens (known origin).
+2. Sign in as alice from a **different browser** (or a private window with a different user agent).
+3. Alice immediately gets a toast + Telegram **security alert** naming the browser family and IP - "new device" / "new network" - with "change your password if this wasn't you".
+4. Sign in as **teller or admin**, open **/staff/users/{alice's id}** (click her name on the staff accounts page).
+5. Walk the page: identity card (email, NRIC, Telegram status, customer since), the **login history** with *New device* / *New network* badges per row, then her accounts and latest transfers - one screen for a takeover investigation.
+
+**Point out:** every login inserts a `login_sessions` row (browser family, IP, first-seen flags); the very first login ever is exempt from alerts; pairing the login signals with held transfers is how staff confirm or clear a suspected takeover.
+
+---
+
+## Scenario 20 - Step-up login, hardened unlink, and origin blocking
+
+**Goal:** show the layered defense against a stolen password and a stolen Telegram.
+
+1. From the **second browser** (now a known-but-flagged origin from scenario 19), log out and log in as alice again from a fresh private window: after the correct password, a **"Verify it's you"** page demands a one-time code from her Telegram. **No session exists yet** - the cookie is only set after the code verifies. Known origins stay password-only.
+2. Enter the code - you land signed in, and the step-up pass is audited.
+3. Now the stolen-Telegram side: send **/unlink** to the bot. Instead of disconnecting, the bot replies that the unlink takes effect in **24 hours**, alice is alerted on every channel, and her **Settings** page shows a red banner with a **Cancel the unlink** button.
+4. Click cancel - it requires her password-backed website session, which is exactly what a Telegram thief doesn't have. (The website's own OTP-confirmed unlink stays immediate - the owner proves control of both factors.)
+5. Bonus beat: from yet another private window, reach the step-up page and type **3 wrong codes**. The attempt is cancelled and that browser + network is **blocked from alice's account for 24 hours**, even with the correct password. The block appears as a red **Active sign-in blocks** panel on her staff profile page.
+
+**Point out:** the password alone is never enough from somewhere new; the unlink delay turns "instant de-factoring" into a 24-hour race the real owner wins; and the origin block stops an attacker from brute-forcing the step-up code.
+
+---
+
 ## Recording running order - one pass per member, flow chart first
 
 Each member appears exactly once. Every block opens with the member's flow
@@ -244,70 +356,13 @@ scenarios are used.
 |---|---|
 | Concurrency-safe money transfer engine | 2, 3, 5 |
 | Transaction audit logging | 2, 4, 7, 9, 12 |
-| OTP simulation / secure verification | 2, 11 |
-| Fraud detection rules | 6 |
-| Role-based access control | 1, 7, 8 |
+| OTP simulation / secure verification | 2, 11, 13, 18, 20 |
+| Fraud detection rules | 6, 15, 16 |
+| Role-based access control | 1, 7, 8, 19 |
 | CRUD across interconnected modules | 7, 8 |
-| Business workflows (loans, approvals) | 8, 10 |
+| Business workflows (loans, approvals) | 8, 10, 14 |
 | SSR frontend & reusable components | all (shared layout, partials, themes) |
 | Concurrency handling / real-time-ish updates (individual) | 3 (race demo page), 5 |
-| Advanced auth / security workflows (individual) | 11 (Telegram), 1 |
+| Advanced auth / security workflows (individual) | 11, 13, 17, 18, 19, 20 |
 
-
----
-
-## New scenarios from the security-hardening pass
-
-**13 - Mandatory Telegram linking.** Register a fresh customer (the form now
-asks First/Middle/Last name **and NRIC**) → note the page says you must sign in
-again → sign in → you are routed to the Telegram linking page **and nowhere
-else** until linked. The page polls and refreshes itself the instant the bot
-confirms. From then on every code arrives on the phone - nothing on screen.
-
-**14 - Transfer limit with hold window.** On an account page, request a limit
-increase → a consent popup warns that increases are held before applying
-(12 h normally). As **alice** the hold is seeded to **10 seconds**: wait it
-out on camera, then send a transfer above the old limit - it now passes. A
-*decrease* applies immediately.
-
-**15 - Fraud hold + identity review.** Send a transfer that drains >50% of a
->$5,000 balance (or ≥ $9,000). After OTP it lands **on hold** - no money moved
-- and you're told it may be illegitimate. Submit the purpose + NRIC; switch to
-teller/admin → **Held transfers** queue shows the claim next to the NRIC on
-file → release (money moves) or deny. The sender gets a toast + Telegram
-message either way.
-
-**16 - Hijack freeze.** Attempt 3 transfers above an account's balance within
-24 h (the race demo does this in one click). The third rejection freezes the
-account automatically and notifies the owner.
-
-**17 - Inactivity timeout.** Sign in, wait 5 minutes (or shrink the interval
-in middleware for the recording), click anything → you're back at the login
-page with "signed out after 5 minutes of inactivity". Server-side, on database
-time - clearing browser cookies can't bypass it.
-
-**18 - Profile changes + OTP everywhere.** Settings → change email or
-password → both require a fresh code. Three wrong codes on a transfer reject
-it outright. Codes expire after 10 minutes; pending loans after 7 days.
-
-**19 - Login device tracking.** Sign in as alice from your usual browser, then
-sign in again from a different browser (or a private window with a different
-user agent). Alice instantly gets a toast + Telegram security alert naming the
-browser and IP ("new device" / "new network"). As staff, open
-**/staff/users/{alice's id}** (click her name on the accounts page): identity
-card with NRIC and Telegram status, the login history with New device / New
-network badges, plus all her accounts and transfers in one place - the
-takeover-investigation view.
-
-**20 - Step-up login + hardened unlink.** From the second browser, log in as
-alice again: after the password, a "Verify it's you" page demands a one-time
-code from her Telegram - no session exists until it verifies (known origins
-stay password-only). Then send **/unlink** to the bot: instead of
-disconnecting, it schedules the unlink 24 hours out, alerts alice everywhere,
-and her Settings page shows a red banner with a **Cancel the unlink** button -
-which requires her website session, exactly what a Telegram thief doesn't
-have. Bonus beat: type 3 wrong step-up codes from the second browser - the
-attempt is cancelled and that browser/network is blocked from alice's account
-for 24 hours (visible as a red "Active sign-in blocks" panel on her staff
-profile), even if the password is correct.
 

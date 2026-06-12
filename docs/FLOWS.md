@@ -69,10 +69,12 @@ sequenceDiagram
     alt first-seen device or network for a linked customer
         A-->>U: step-up page, a one-time code goes to Telegram, NO session yet
         U->>A: POST /login/stepup with the code, wrong codes retry inline
-        Note over U,A: 3 wrong codes cancel the attempt and BLOCK that browser + network from this account for 24 hours, even with the right password
+        Note over U,A: 3 wrong codes cancel the attempt
+        Note over U,A: that browser and network is then blocked for 24 hours
     end
     A-->>U: session cookie + role-based landing, unlinked customers go to Telegram linking
-    Note over U,P: identical error for wrong email vs wrong password, no user enumeration. Known origins stay password-only - the step-up fires only on new origins.
+    Note over U,P: identical error for wrong email vs wrong password, no user enumeration
+    Note over U,P: known origins stay password-only - the step-up fires only on new origins
 ```
 
 ## 2. Account opening with OTP and maker-checker approval
@@ -141,7 +143,6 @@ sequenceDiagram
     T1->>P: 15 >= 10, debit, COMMIT, balance now 5
     Note over T2,P: lock released, T2 reads the REAL balance
     T2->>P: 5 >= 10 fails, status rejected, insufficient funds
-    Note over T1,T2: proven by tests/transfer_concurrency.rs and the admin Race demo page
 ```
 
 ## 5. Fraud hold, identity review, hijack defense
@@ -176,13 +177,15 @@ sequenceDiagram
     participant P as PostgreSQL
 
     U->>A: request a limit change on the account page
-    A-->>U: themed consent popup, increases are held before applying
+    A-->>U: consent popup, increases are held before applying
     U->>A: confirm, then a one-time code page, OTP verified
     alt new limit at or below current
         S->>P: apply immediately, owner notified
     else increase
         S->>P: INSERT limit_changes, effective_at = now + hold window
-        Note over S,P: 12h default, Alice seeded to 10s for the demo. The OLD limit applies until maturity. Matured rows are promoted lazily on every account read and before every transfer, and the page shows the effective moment in the viewer's local time.
+        Note over S,P: 12 hour hold by default, the OLD limit applies until maturity
+        Note over S,P: matured rows are promoted lazily on every account read and before every transfer
+        Note over S,P: the page shows the effective moment in the viewer's local time
     end
 ```
 
@@ -221,9 +224,9 @@ sequenceDiagram
     participant P as PostgreSQL
 
     AD->>S: adjust balance, responsibility popup acknowledged
-    alt absolute delta at most 1000
+    alt balance added or deducted at most 1000
         S->>P: apply immediately under a row lock, audited
-    else larger
+    else adjustments above 1000
         S->>P: INSERT adjustment_requests, parked
         T->>S: approve as the OTHER staff role, same person or same role is refused
         S->>P: locked apply, refuses a negative result, both ids audited
@@ -243,7 +246,10 @@ sequenceDiagram
     A->>T: one-time code to the linked chat
     U->>A: confirm with the code, wrong codes retry inline
     A->>P: apply the change, audited
-    Note over U,T: bot commands - /start code links, /help lists commands. /unlink is hardened - it schedules the unlink 24h out with warnings on every channel, cancellable only from the website with a password-backed session. The website's own OTP-confirmed unlink stays immediate.
+    Note over U,T: bot commands - /start code links, /help lists commands
+    Note over U,T: /unlink is hardened - it schedules the unlink 24h out with warnings on every channel
+    Note over U,T: cancellable only from a password-backed website session
+    Note over U,T: the website's own OTP-confirmed unlink stays immediate
 ```
 
 ## 10. Sessions, TTLs, and the activity trail
@@ -263,7 +269,8 @@ sequenceDiagram
         G->>P: UPDATE last_activity_at = now
         G-->>B: request proceeds
     end
-    Note over B,P: the cookie key mixes in a per-boot nonce, so a server restart logs everyone out. Other TTLs - OTPs and pending transfers 10 minutes, pending loans 7 days, notifications fire exactly once.
+    Note over B,P: the cookie key mixes in a per-boot nonce, so a server restart logs everyone out
+    Note over B,P: other TTLs - OTPs and pending transfers 10 minutes, pending loans 7 days
 ```
 
 ## 11. Notifications and live status
@@ -279,7 +286,7 @@ sequenceDiagram
     SV->>T: mirrored to Telegram when the user is linked
     loop every 5 seconds and on tab focus
         B->>P: GET /notifications, fetch-and-mark-seen
-        B-->>B: themed toast per message, fires exactly once
+        B-->>B: toast per message, fires exactly once
     end
     loop every 4 seconds on pending pages
         B->>P: GET status for a held transfer, pending account, or pending loan
@@ -298,7 +305,8 @@ sequenceDiagram
     OS->>M: signal, actix finishes in-flight requests
     M->>P: dedicated connection, counts and totals across the bank
     M->>P: INSERT audit_log event system.snapshot with the JSON payload
-    Note over M,P: a hard crash cannot run anything, but committed transactions are already durable via the WAL - the snapshot is a forensic marker, not recovery
+    Note over M,P: a hard crash cannot run anything, but committed transactions are already durable via the WAL
+    Note over M,P: the snapshot is a forensic marker, not recovery
 ```
 
 ## 13. Login device tracking
@@ -318,5 +326,6 @@ sequenceDiagram
         A->>P: audit auth.login.new_origin + notification
         A->>T: security alert - new device or network, change your password if not you
     end
-    Note over A,P: staff see the full history with New device and New network badges on /staff/users/id, beside the user's accounts and transfers - pair with held transfers when investigating takeovers
+    Note over A,P: staff see the full history with New device and New network badges on /staff/users/id
+    Note over A,P: shown beside the user's accounts and transfers - pair with held transfers when investigating takeovers
 ```
