@@ -110,6 +110,7 @@ sequenceDiagram
     A->>S: create
     S->>P: recipient must belong to a DIFFERENT user, DB trigger backs this up
     S->>P: insufficient funds pre-check FIRST, records a rejected row, no OTP issued
+    S->>P: available-balance check: amount must fit balance MINUS funds already reserved by pending/on_hold transfers
     S->>P: apply matured limit changes, then enforce the per-transfer limit
     S->>S: Mutex rate limit, 5 per minute per account
     S->>P: INSERT pending + argon2 OTP hash, code goes to Telegram
@@ -118,6 +119,7 @@ sequenceDiagram
     S->>S: actor must own the source account, verify OTP, 3 strikes rejects
     S->>P: lock both accounts FOR UPDATE in ascending id order, no deadlock
     S->>S: re-check under lock, active status and balance
+    S->>P: reserved-funds re-check under lock: balance MINUS other on_hold transfers must still cover the amount, else rejected
     alt all checks pass and no fraud rule matches
         S->>P: debit, credit, status completed, one transaction, COMMIT
         S->>P: named notifications both ways + Telegram
@@ -126,6 +128,7 @@ sequenceDiagram
     else a check fails
         S->>P: status rejected with a human-readable reason
     end
+    Note over S,P: funds committed to pending/on_hold transfers are reserved - the same money cannot be promised twice, so a flagged transfer always has its money when staff release it
 ```
 
 ## 4. Concurrency - why simultaneous transfers cannot corrupt balances

@@ -329,6 +329,33 @@ impl TransferService for PgTransferService {
             )));
         }
 
+        // ── Available-balance check ─────────────────────────────────────
+        // Money already committed to this account's OUTSTANDING outgoing
+        // transfers - those awaiting OTP ('pending') or held for staff review
+        // ('on_hold') - is not spendable a second time. Comparing against the
+        // raw balance would let a user promise the same dollars twice: e.g. a
+        // $10k transfer parked on hold, then the balance drained by fresh
+        // transfers, so the hold can never be released. We gate against the
+        // AVAILABLE balance instead. (This is the early UX guard; confirm()
+        // re-checks under the row lock for the race-safe guarantee.)
+        let (reserved,): (Decimal,) = sqlx::query_as(
+            r#"
+            SELECT COALESCE(SUM(amount), 0)
+            FROM transfers
+            WHERE from_account_id = $1 AND status IN ('pending', 'on_hold')
+            "#,
+        )
+        .bind(from_account_id)
+        .fetch_one(&self.db)
+        .await?;
+        let available = balance - reserved;
+        if amount > available {
+            return Err(AppError::BadRequest(format!(
+                "amount exceeds your available balance of ${available} \
+                 (${reserved} is reserved by pending or on-hold transfers)"
+            )));
+        }
+
         if amount > limit {
             return Err(AppError::BadRequest(format!(
                 "amount exceeds this account's per-transfer limit of ${limit} - request a limit increase from the account page"
@@ -600,6 +627,48 @@ impl TransferService for PgTransferService {
                 "insufficient funds: balance ${} < ${}",
                 from.2, pending.amount
             )));
+        }
+
+        // (5a) Reserved-funds re-check, under the same row lock as the balance.
+        // Funds committed to OTHER on-hold transfers from this account are
+        // earmarked pending staff review and must not be re-spent by this one.
+        // Without this, a transfer parked on hold reserves nothing, so the
+        // owner could drain the balance with fresh transfers and the held
+        // transfer would later fail to release ("bugs out" on approval).
+        // Excludes the current transfer; on-hold amounts are immutable and the
+        // account row is locked FOR UPDATE, so this is race-safe.
+        let (held_elsewhere,): (Decimal,) = sqlx::query_as(
+            r#"
+            SELECT COALESCE(SUM(amount), 0)
+            FROM transfers
+            WHERE from_account_id = $1 AND status = 'on_hold' AND id <> $2
+            "#,
+        )
+        .bind(pending.from_account_id)
+        .bind(transfer_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if from.2 - held_elsewhere < pending.amount {
+            let reason = format!(
+                "insufficient available funds: ${} of the ${} balance is reserved by transfers held for review",
+                held_elsewhere, from.2
+            );
+            mark_rejected(&mut tx, transfer_id, &reason).await?;
+            tx.commit().await?;
+            self.audit
+                .record(
+                    Some(actor),
+                    "transfer.rejected",
+                    json!({
+                        "transfer_id": transfer_id,
+                        "reason": "funds reserved by on-hold transfers",
+                        "balance": from.2.to_string(),
+                        "reserved": held_elsewhere.to_string(),
+                        "amount": pending.amount.to_string(),
+                    }),
+                )
+                .await?;
+            return Err(reject_with(&reason));
         }
 
         // (5b) Fraud rules - evaluated only on otherwise-payable transfers.
