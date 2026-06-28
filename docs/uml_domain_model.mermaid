@@ -1,0 +1,170 @@
+classDiagram
+    direction LR
+
+    class User {
+        +i64 id
+        +String email
+        +String password_hash
+        +String full_name
+        +Option~String~ first_name
+        +Option~String~ middle_name
+        +Option~String~ last_name
+        +Option~String~ nric
+        +Role role
+        +Option~i64~ telegram_chat_id
+        +Option~DateTime~ last_activity_at
+        +DateTime created_at
+        +given_name() String
+    }
+    class LoginSession {
+        +i64 id
+        +i64 user_id
+        +String browser
+        +Option~String~ ip
+        +bool is_new_device
+        +bool is_new_network
+        +DateTime created_at
+    }
+    class Account {
+        +i64 id
+        +i64 user_id
+        +String account_number
+        +AccountType kind
+        +AccountStatus status
+        +Decimal balance
+        +Decimal transfer_limit
+        +i32 limit_hold_seconds
+        +DateTime created_at
+    }
+    class AdjustmentRequest {
+        +i64 id
+        +i64 account_id
+        +Decimal delta
+        +i64 requested_by
+        +Role requested_role
+        +Option~i64~ approved_by
+        +Option~DateTime~ approved_at
+    }
+    class LimitChange {
+        +i64 id
+        +i64 account_id
+        +Decimal old_limit
+        +Decimal new_limit
+        +DateTime effective_at
+        +Option~DateTime~ applied_at
+    }
+    class Transfer {
+        +i64 id
+        +i64 from_account_id
+        +i64 to_account_id
+        +Decimal amount
+        +TransferStatus status
+        +Option~String~ note
+        +Option~String~ status_reason
+        +i32 otp_attempts
+        +DateTime created_at
+    }
+    class TransferReview {
+        +i64 id
+        +i64 transfer_id
+        +String purpose
+        +String nric_claimed
+        +Option~i64~ decided_by
+        +Option~String~ decision
+    }
+    class Loan {
+        +i64 id
+        +i64 user_id
+        +Decimal principal
+        +Decimal interest_rate
+        +i32 term_months
+        +LoanStatus status
+        +Option~i64~ disbursement_account_id
+        +Option~DateTime~ next_payment_due
+        +DateTime created_at
+        +rate_pct() String
+    }
+    class LoanApproval {
+        +i64 id
+        +i64 loan_id
+        +i64 approver_user_id
+        +Role role
+        +DateTime approved_at
+    }
+    class Repayment {
+        +i64 id
+        +i64 loan_id
+        +Decimal amount
+        +Option~i64~ account_id
+        +DateTime paid_at
+    }
+    class ActionOtp {
+        +i64 id
+        +i64 user_id
+        +String purpose
+        +Json payload
+        +String otp_hash
+        +Option~DateTime~ consumed_at
+    }
+    class AuditEntry {
+        +i64 id
+        +Option~i64~ actor_user_id
+        +String event
+        +Json payload
+        +DateTime created_at
+    }
+    class Notification {
+        +i64 id
+        +i64 user_id
+        +String message
+        +Option~DateTime~ seen_at
+    }
+
+    class Role {
+        <<enumeration>>
+        Customer
+        Teller
+        Admin
+    }
+    class AccountStatus {
+        <<enumeration>>
+        Pending
+        Active
+        Frozen
+        Closed
+    }
+    class TransferStatus {
+        <<enumeration>>
+        Pending
+        Completed
+        Failed
+        Rejected
+        OnHold
+    }
+    class LoanStatus {
+        <<enumeration>>
+        Pending
+        Approved
+        Active
+        PaidOff
+        Rejected
+    }
+
+    User "1" --> "0..*" LoginSession : signs in
+    User "1" --> "0..*" Account : owns
+    User "1" --> "0..*" Loan : borrows
+    User "1" --> "0..*" ActionOtp : pending actions
+    User "1" --> "0..*" Notification : receives
+    User "1" --> "0..*" AuditEntry : acts in
+    Account "1" --> "0..*" LimitChange : limit history
+    Account "1" --> "0..*" AdjustmentRequest : dual-control edits
+    Account "1" --> "0..*" Transfer : sends or receives
+    Account "0..1" <-- Loan : disburses to
+    Transfer "1" --> "0..1" TransferReview : reviewed by
+    Loan "1" --> "0..2" LoanApproval : dual control
+    Loan "1" --> "0..*" Repayment : repaid by
+    Repayment "0..*" --> "0..1" Account : debits
+    User --> Role
+    Account --> AccountStatus
+    Transfer --> TransferStatus
+    Loan --> LoanStatus

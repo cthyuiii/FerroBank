@@ -1,0 +1,115 @@
+classDiagram
+    direction TB
+
+    class AuthService {
+        <<trait>>
+        +register(NewUser) User
+        +login(email, pw) User
+        +find_by_id(id) User
+        +change_email(user, email)
+        +change_password(user, pw)
+    }
+    class AccountService {
+        <<trait>>
+        +open_account(user, kind, approved) Account
+        +approve_account(id)
+        +freeze_account(id)
+        +unfreeze_account(id)
+        +close_account(id)
+        +adjust_balance(id, delta) Decimal
+        +request_limit_change(id, limit) DateTime
+        +pending_limit_change(id)
+        +request_adjustment(id, delta, who, role) Option~Decimal~
+        +approve_adjustment(req, who, role) Decimal
+        +pending_adjustments() List~AdjustmentRow~
+        +list_for_user(user) List~Account~
+    }
+    class TransferService {
+        <<trait>>
+        +create(actor, from, to, amount) TransferCreated
+        +confirm(actor, id, otp) Transfer
+        +history(user) List~Transfer~
+        +submit_review(actor, id, purpose, nric)
+        +list_held() List~HeldRow~
+        +release(reviewer, id)
+        +deny(reviewer, id, reason)
+    }
+    class LoanService {
+        <<trait>>
+        +apply(user, principal, rate, term, account) Loan
+        +approve(id, approver, role) Loan
+        +reject(id) Loan
+        +record_repayment(id, amount, account) Repayment
+        +outstanding_balance(id) Decimal
+    }
+    class ActionOtpService {
+        <<trait>>
+        +begin(user, purpose, payload) ActionChallenge
+        +verify(user, action, purpose, otp) Json
+    }
+    class AuditService {
+        <<trait>>
+        +record(actor, event, payload)
+        +recent(limit) List~AuditEntry~
+    }
+    class AdminService {
+        <<trait>>
+        +snapshot() DashboardSnapshot
+        +all_accounts()
+        +all_transfers(from, to)
+    }
+    class OtpChannel {
+        <<trait>>
+        +send_otp(user, otp) bool
+        +send_note(user, text) bool
+    }
+
+    class PgAuthService
+    class PgAccountService
+    class PgTransferService {
+        -PgPool db
+        -Arc~AuditService~ audit
+        -Arc~OtpChannel~ otp_channel
+        -Mutex~HashMap~ rate_limit
+    }
+    class PgLoanService
+    class PgActionOtpService
+    class PgAuditService
+    class PgAdminService
+    class TelegramOtp {
+        -PgPool db
+        -reqwest Client http
+    }
+    class ScreenOtp
+
+    AuthService <|.. PgAuthService : implements
+    AccountService <|.. PgAccountService : implements
+    TransferService <|.. PgTransferService : implements
+    LoanService <|.. PgLoanService : implements
+    ActionOtpService <|.. PgActionOtpService : implements
+    AuditService <|.. PgAuditService : implements
+    AdminService <|.. PgAdminService : implements
+    OtpChannel <|.. TelegramOtp : implements
+    OtpChannel <|.. ScreenOtp : implements
+
+    PgTransferService o-- AuditService : composes
+    PgTransferService o-- OtpChannel : composes
+    PgAccountService o-- OtpChannel : composes
+    PgLoanService o-- OtpChannel : composes
+    PgActionOtpService o-- OtpChannel : composes
+    PgAdminService o-- AccountService : composes
+    PgAdminService o-- LoanService : composes
+    PgAdminService o-- AuditService : composes
+
+    class Handlers {
+        thin: parse form, call trait, render template
+    }
+    class ActivityGuard {
+        <<middleware>>
+        activity trail + 5-min TTL + link enforcement
+    }
+    Handlers ..> AuthService : Arc~dyn Trait~
+    Handlers ..> AccountService : Arc~dyn Trait~
+    Handlers ..> TransferService : Arc~dyn Trait~
+    Handlers ..> LoanService : Arc~dyn Trait~
+    Handlers ..> ActionOtpService : Arc~dyn Trait~
