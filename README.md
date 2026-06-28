@@ -7,10 +7,9 @@ A server-side-rendered banking platform for **CSC1106 Web Programming**
 out-of-band OTPs via Telegram, fraud holds with identity review, and a full
 audit trail.
 
-> **Group / author info** - to be filled in by the group leader before submission:
->
-> - Group Number: `g##`
-> - Members: `Name 1 (SIT ID)`, `Name 2 (SIT ID)`, `Name 3 (SIT ID)`, `Name 4 (SIT ID)`, `Name 5 (SIT ID)`
+
+> - Group Number: `G26`
+> - Members: `Macarius Dai Chenxuan 2500581`, `Chin Yu Xuan 2502811`, `Heng Ann Ya 2502737`, `Wesley Chandra 2500823`, `Kent Lo Wei Jun 2500343`
 
 ---
 
