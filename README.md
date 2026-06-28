@@ -73,14 +73,11 @@ src/
   bin/seed.rs      idempotent demo data
 templates/         Askama: layout + per-module pages, otp_confirm, review queues
 tests/             transfer concurrency/double-spend + shutdown snapshot
-docs/              architecture, flows, UML/ER, demo scenarios, runsheet,
-                   report outline, proposal, file guide
 ```
 
 ## Running FerroBank
 
-All options serve <http://localhost:8080>. **Docker is optional** - choose A
-if you don't want it at all.
+All options serve <http://localhost:8080>.
 
 ### Prerequisites
 
@@ -176,7 +173,7 @@ All passwords follow `<name>123`. Customers have NRICs on file; staff have none.
 Plus seeded loans and historical transfers that exercise the fraud panel
 (large $12,500 · a flagged rejection · a velocity burst).
 
-## Security controls (quick reference)
+## Security controls
 
 - OTP on **every** sensitive action (argon2-hashed, single-use, 10-min TTL, 3 strikes)
 - No self-transfers (service check + DB trigger)
@@ -217,6 +214,4 @@ inconsistent balances, no double spending. The same thing is clickable at
 
 ## Documentation
 
-Everything beyond this README lives in [`docs/`](./docs): architecture
-narrative, sequence diagrams, UML + ER models, demo scenarios, the
-presentation runsheet, the report outline, and the planning proposal.
+Everything beyond this README lives in [`docs/`](./docs): sequence diagrams, UML + ER models.
