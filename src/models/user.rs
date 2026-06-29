@@ -1,4 +1,4 @@
-//! User model - owned by the Auth module (Member 2).
+//! User model
 //!
 //! The `Role` enum is also referenced by the Platform Lead's auth middleware,
 //! so its variants are part of the cross-module contract - don't rename them

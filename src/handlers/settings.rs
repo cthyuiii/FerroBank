@@ -1,5 +1,4 @@
-//! Settings handlers - Telegram OTP linking (Member 4's extended feature).
-//!
+//! Settings handlers 
 //! Routes:
 //!   GET  /settings/telegram          guide + deep link, linked status, auto-refresh
 //!   POST /settings/telegram/unlink   OTP-gated unlink

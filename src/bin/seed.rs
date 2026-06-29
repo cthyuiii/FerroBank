@@ -1,14 +1,13 @@
-//! Dev-only seed script: creates demo users, accounts, loans, transfers, and
+//! seed script: creates demo users, accounts, loans, transfers, and
 //! audit entries so the dashboards have something to show without anyone having
 //! to click through the UI first.
 //!
 //! Usage:   cargo run --bin seed
 //!
-//! **Idempotent.** Re-running skips rows that already exist, so it's safe to run
+//! Idempotent. Re-running skips rows that already exist, so it's safe to run
 //! repeatedly. Direct SQL inserts are used for "historical" transfers and audit
 //! entries because the production code paths (TransferService::create + confirm,
-//! AuditService::record) all stamp `created_at = now()` and we want backdated
-//! demo data.
+//! AuditService::record) all stamp `created_at = now()`
 
 use std::collections::HashMap;
 

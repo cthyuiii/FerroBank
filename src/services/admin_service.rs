@@ -1,4 +1,4 @@
-//! Admin service - owned by the Platform Lead (Member 1).
+//! Admin service
 //!
 //! Composes read-only data from every other module into the dashboard view-model.
 //! Holds Arcs of the other service traits so it's testable with mocks.

@@ -1,4 +1,4 @@
-//! Account service - owned by the Accounts module (Member 3).
+//! Account service
 
 use async_trait::async_trait;
 use rand::Rng;

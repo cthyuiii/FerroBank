@@ -1,4 +1,4 @@
-//! Admin handlers - owned by the Platform Lead (Member 1).
+//! Admin handlers
 //!
 //! Aggregates read-only data from every module into a single dashboard, plus
 //! the staff-facing management screens (all accounts / all transfers) and the

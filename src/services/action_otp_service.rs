@@ -1,4 +1,4 @@
-//! Generalized action-level OTP guard - Member 4's extended feature.
+//! Generalized action-level OTP guard 
 //!
 //! The transfer flow has OTP confirmation built into its own table; this
 //! service extends the same one-time-code protection to ANY sensitive action:

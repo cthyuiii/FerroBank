@@ -1,4 +1,4 @@
-//! Domain entities. One file per module owner.
+//! Domain entities. 
 
 pub mod account;
 pub mod loan;

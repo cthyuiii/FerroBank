@@ -1,4 +1,4 @@
-//! Transfers handlers - owned by the Transfers module (Member 4).
+//! Transfers handlers
 //!
 //! Two-step flow:
 //!   GET  /transfers           → user's transfer history

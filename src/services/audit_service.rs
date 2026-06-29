@@ -1,4 +1,4 @@
-//! Audit service - owned by the Transfers module (Member 4).
+//! Audit service
 //!
 //! Append-only log of important financial and security events. Other modules
 //! (transfers, loans, admin actions) call `record(...)` after every state change

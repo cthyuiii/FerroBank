@@ -1,4 +1,4 @@
-//! Transfer service - owned by the Transfers module (Member 4).
+//! Transfer service
 //!
 //! Demonstrates two layers of concurrency control:
 //!

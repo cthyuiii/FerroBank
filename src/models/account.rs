@@ -1,4 +1,4 @@
-//! Account model - owned by the Accounts module (Member 3).
+//! Account model.
 
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};

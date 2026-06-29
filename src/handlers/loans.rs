@@ -1,4 +1,4 @@
-//! Loans handlers - owned by the Loans module (Member 5).
+//! Loans handler
 //!
 //! Routes:
 //!   GET  /loans               → customers see their own loans; staff see all loans

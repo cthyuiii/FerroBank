@@ -1,4 +1,4 @@
-//! Auth handlers - owned by the Auth module (Member 2).
+//! Auth handlers
 //!
 //! Flow:
 //!   GET  /login     → render login form

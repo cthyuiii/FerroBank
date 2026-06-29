@@ -1,4 +1,4 @@
-//! Loan service - owned by the Loans module (Member 5).
+//! Loan service
 //!
 //! Uses a **simple-interest** model for clarity: total amount due is
 //!     `principal * (1 + interest_rate * term_months / 12)`

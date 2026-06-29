@@ -1,4 +1,4 @@
-//! Auth service - owned by the Auth module (Member 2).
+//! Auth service 
 //!
 //! Responsibilities:
 //!   - hash & verify passwords with argon2id

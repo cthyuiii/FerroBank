@@ -1,5 +1,3 @@
-//! Telegram OTP channel - Member 4's extended feature.
-//!
 //! Same OOP shape as the rest of the codebase: the [`OtpChannel`] trait is the
 //! abstraction the transfer engine depends on, with two implementations -
 //! [`TelegramOtp`] (real out-of-band delivery via the Telegram Bot API) and

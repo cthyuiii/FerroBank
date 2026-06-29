@@ -1,4 +1,4 @@
-//! Accounts handlers - owned by the Accounts module (Member 3).
+//! Accounts handlers
 //!
 //! Flow:
 //!   GET  /accounts            → list current user's accounts
