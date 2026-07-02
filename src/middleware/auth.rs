@@ -1,12 +1,12 @@
 //! Session-backed authentication: a `CurrentUser` extractor for handlers and a
 //! `RequireRole` middleware for protecting whole scopes.
 //!
-//! What the Platform Lead publishes:
+//! This module publishes:
 //! - [`CurrentUser`] - drop into any handler signature to require a logged-in user.
 //! - [`RequireRole`] - `.wrap(RequireRole(Role::Admin))` on a scope to enforce a role.
-//! - [`session::login`] / [`session::logout`] - for the Auth module to flip session state.
+//! - [`session::login`] / [`session::logout`] - for the auth handlers to flip session state.
 //!
-//! Auth module owner uses `session::login(&session, SessionUser { ... })` after
+//! The auth handlers call `session::login(&session, SessionUser { ... })` after
 //! verifying credentials, and `session::logout(&session)` on logout.
 
 use std::future::{ready, Ready};
@@ -113,7 +113,7 @@ where
     fn new_transform(&self, service: S) -> Self::Future {
         ready(Ok(RequireRoleMiddleware {
             service,
-            required: self.0.clone(),
+            required: self.0,
         }))
     }
 }
@@ -137,7 +137,7 @@ where
     fn call(&self, req: ServiceRequest) -> Self::Future {
         let session = req.get_session();
         let session_user = session.get::<SessionUser>(SESSION_KEY).ok().flatten();
-        let required = self.required.clone();
+        let required = self.required;
 
         match session_user {
             // Admin is a superuser. Otherwise the role must match exactly.

@@ -72,12 +72,10 @@ async fn main() -> anyhow::Result<()> {
     });
 
     // ── Service wiring ───────────────────────────────────────────────────
-    // Each module owner provides `pub struct PgXxxService` and the matching
-    // `impl XxxService for PgXxxService`. The Platform Lead just instantiates
-    // them here once - there are no per-request constructors anywhere.
+    // Each domain module provides a `pub struct PgXxxService` and the matching
+    // `impl XxxService for PgXxxService`. All of them are instantiated exactly
+    // once here at startup - there are no per-request constructors anywhere.
     //
-    // Teammates: do NOT add new lines to main.rs when you fill in your service.
-    // Just implement the `new(...)` constructor with the signature shown.
     // OTP channel: Telegram when configured, on-screen fallback otherwise.
     // The poller is the background task that completes /start account links.
     let otp_channel: Arc<dyn OtpChannel> = match &config.telegram_bot_token {
@@ -103,13 +101,12 @@ async fn main() -> anyhow::Result<()> {
     let action_otp_service: Arc<dyn ActionOtpService> =
         Arc::new(PgActionOtpService::new(pool.clone(), otp_channel.clone()));
     // Admin service composes the others. Build it last and inject the deps.
-    let admin_service: Arc<dyn AdminService> = Arc::new(
-        PgAdminService::new(pool.clone()).with_services(
-            account_service.clone(),
-            loan_service.clone(),
-            audit_service.clone(),
-        ),
-    );
+    let admin_service: Arc<dyn AdminService> = Arc::new(PgAdminService::new(
+        pool.clone(),
+        account_service.clone(),
+        loan_service.clone(),
+        audit_service.clone(),
+    ));
 
     // Wrap each Arc<dyn Trait> in actix's web::Data so handlers can extract it.
     let auth_data = web::Data::from(auth_service);

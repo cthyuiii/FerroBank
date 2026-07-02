@@ -1,15 +1,13 @@
 //! FerroBank - iron-clad core banking, built in Rust.
 //!
 //! The crate is split into:
-//! - [`config`] / [`db`] / [`state`] - platform infrastructure (Platform Lead)
-//! - [`errors`] - shared `AppError` everyone returns (Platform Lead)
-//! - [`middleware`] - auth guard, current-user extractor (Platform Lead)
-//! - [`models`] - domain entities (one file per module owner)
-//! - [`services`] - business logic behind traits (one file per module owner)
-//! - [`handlers`] - Actix routes (one file per module owner)
+//! - [`config`] / [`db`] / [`state`] - platform infrastructure
+//! - [`errors`] - the shared `AppError` type every layer returns
+//! - [`middleware`] - auth guard, current-user extractor
+//! - [`models`] - domain entities (one file per domain)
+//! - [`services`] - business logic behind traits (one file per domain)
+//! - [`handlers`] - Actix routes (one file per domain)
 //! - [`routes`] - the one place that mounts every module's routes
-//!
-//! See `ARCHITECTURE.md` for the contract every module follows.
 
 pub mod config;
 pub mod db;

@@ -377,7 +377,7 @@ async fn transfers(
 
 // ── Race condition demo ──────────────────────────────────────────────
 //
-// Visual, recordable proof of the concurrency-safe transfer engine: fires N
+// Visual, reproducible proof of the concurrency-safe transfer engine: fires N
 // transfers at the same instant through the REAL production code path
 // (create → OTP → confirm) and renders the outcome of every task plus the
 // money-conservation invariants. The browser-friendly twin of

@@ -293,7 +293,7 @@ async fn create(
 
     // Resolve recipient account number → id. We do this directly via the pool
     // rather than extend AccountService - it's a single lookup specific to
-    // the transfer flow and isn't worth adding to Member 3's trait.
+    // the transfer flow and isn't worth widening the shared trait for.
     let to_account_number = form.to_account_number.trim();
     let to_id: Option<(i64,)> = sqlx::query_as(
         r#"SELECT id FROM accounts WHERE account_number = $1"#,

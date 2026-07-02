@@ -4,7 +4,7 @@
 //!     `principal * (1 + interest_rate * term_months / 12)`
 //! and the outstanding balance is `total_due - sum_of_repayments`. A production
 //! system would use amortization with monthly compounding; the simplified model
-//! is documented in the report.
+//! keeps the repayment arithmetic transparent and easy to verify.
 
 use async_trait::async_trait;
 use chrono::Utc;

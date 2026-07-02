@@ -150,37 +150,29 @@ pub trait AdminService: Send + Sync {
 
 pub struct PgAdminService {
     // Private state - consumers use the `AdminService` trait. The dependent
-    // services are injected after construction via `with_services` (a builder),
-    // because `PgAdminService` is built in `main.rs` before they exist.
+    // services are constructor-injected in `main.rs`, which builds this
+    // service last (after the ones it composes).
     db: PgPool,
-    accounts: Option<Arc<dyn AccountService>>,
-    loans: Option<Arc<dyn LoanService>>,
-    audit: Option<Arc<dyn AuditService>>,
+    accounts: Arc<dyn AccountService>,
+    loans: Arc<dyn LoanService>,
+    audit: Arc<dyn AuditService>,
     // Transfer reads are done with direct joined SQL here (so the dashboard can
     // show owner names), so the TransferService isn't injected.
 }
 
 impl PgAdminService {
-    pub fn new(db: PgPool) -> Self {
-        Self {
-            db,
-            accounts: None,
-            loans: None,
-            audit: None,
-        }
-    }
-
-    /// Inject the dependent services. Called by main.rs after all services are built.
-    pub fn with_services(
-        mut self,
+    pub fn new(
+        db: PgPool,
         accounts: Arc<dyn AccountService>,
         loans: Arc<dyn LoanService>,
         audit: Arc<dyn AuditService>,
     ) -> Self {
-        self.accounts = Some(accounts);
-        self.loans = Some(loans);
-        self.audit = Some(audit);
-        self
+        Self {
+            db,
+            accounts,
+            loans,
+            audit,
+        }
     }
 
     // ── Joined helpers for the dashboard (people, not ids) ───────────────
@@ -277,28 +269,14 @@ impl PgAdminService {
 #[async_trait]
 impl AdminService for PgAdminService {
     async fn snapshot(&self) -> Result<DashboardSnapshot, AppError> {
-        // Use cheap defaults if injection hasn't happened yet - keeps the
-        // dashboard renderable during scaffolding.
-        let active_accounts = match &self.accounts {
-            Some(a) => a.count_active().await?,
-            None => 0,
-        };
-        let total_deposits = match &self.accounts {
-            Some(a) => a.total_deposits().await?,
-            None => Decimal::ZERO,
-        };
-        let portfolio_outstanding = match &self.loans {
-            Some(l) => l.portfolio_outstanding().await?,
-            None => Decimal::ZERO,
-        };
+        let active_accounts = self.accounts.count_active().await?;
+        let total_deposits = self.accounts.total_deposits().await?;
+        let portfolio_outstanding = self.loans.portfolio_outstanding().await?;
         // Joined directly so the dashboard shows applicant/owner names, not ids.
         let pending_loans_list = self.pending_loans_detailed().await?;
         let recent_transfers = self.recent_transfers_detailed(10).await?;
         let flagged_transfers = self.flagged_transfers_detailed().await?;
-        let recent_audit = match &self.audit {
-            Some(a) => a.recent(20).await?,
-            None => vec![],
-        };
+        let recent_audit = self.audit.recent(20).await?;
 
         Ok(DashboardSnapshot {
             active_accounts,

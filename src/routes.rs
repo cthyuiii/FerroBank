@@ -1,7 +1,7 @@
 //! Top-level route mounting. The **only** place that calls into each module's `routes()`.
 //!
-//! Module owners: add your `routes()` call here when your module is ready. Don't
-//! mount routes anywhere else.
+//! New modules register their `routes()` here; routes are never mounted
+//! anywhere else, so this file is the complete route map of the application.
 
 use actix_web::web;
 

@@ -5,7 +5,7 @@ use std::time::Duration;
 
 /// Build a `PgPool` against the given database URL.
 ///
-/// Uses sensible defaults for a classroom workload. Tune `max_connections`
+/// Uses sensible defaults for a small deployment. Tune `max_connections`
 /// in production based on observed load.
 pub async fn connect(database_url: &str) -> anyhow::Result<PgPool> {
     let pool = PgPoolOptions::new()

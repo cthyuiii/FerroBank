@@ -11,9 +11,8 @@
 //!    updates, no double spending) when multiple Actix workers process
 //!    concurrent transfers against the same accounts.
 //!
-//! Together they answer the spec's call for "thread safety, transactional
-//! consistency, Mutex locking, rollback mechanisms, and concurrent request
-//! handling within Rust and Actix Web."
+//! Together they provide thread safety, transactional consistency, rollback
+//! on failure, and correct behaviour under concurrent request handling.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -580,10 +579,7 @@ impl TransferService for PgTransferService {
                     json!({ "transfer_id": transfer_id, "reason": "source not active" }),
                 )
                 .await?;
-            return Err(reject_with(&format!(
-                "source account is {}",
-                from.1.label().to_lowercase()
-            )));
+            return Err(reject_with(&reason));
         }
         if to.1 != AccountStatus::Active {
             let reason = format!("destination account is {}", to.1.label().to_lowercase());
@@ -596,10 +592,7 @@ impl TransferService for PgTransferService {
                     json!({ "transfer_id": transfer_id, "reason": "destination not active" }),
                 )
                 .await?;
-            return Err(reject_with(&format!(
-                "destination account is {}",
-                to.1.label().to_lowercase()
-            )));
+            return Err(reject_with(&reason));
         }
         if from.2 < pending.amount {
             let reason = format!(
@@ -623,10 +616,7 @@ impl TransferService for PgTransferService {
 
             self.check_overdraft_freeze(actor, pending.from_account_id).await?;
 
-            return Err(reject_with(&format!(
-                "insufficient funds: balance ${} < ${}",
-                from.2, pending.amount
-            )));
+            return Err(reject_with(&reason));
         }
 
         // (5a) Reserved-funds re-check, under the same row lock as the balance.

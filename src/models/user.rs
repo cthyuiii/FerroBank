@@ -1,8 +1,8 @@
 //! User model
 //!
-//! The `Role` enum is also referenced by the Platform Lead's auth middleware,
-//! so its variants are part of the cross-module contract - don't rename them
-//! without coordinating in the team chat.
+//! The `Role` enum is also referenced by the auth middleware and maps to the
+//! Postgres `user_role` enum, so its variants must stay in sync with the
+//! migrations.
 
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;

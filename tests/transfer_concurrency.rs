@@ -1,7 +1,6 @@
 //! Integration tests: the transfer engine under concurrent load.
 //!
-//! Together these prove the spec's guarantees for the Concurrency-Safe Money
-//! Transfer Engine:
+//! Together these prove the transfer engine's core guarantees:
 //!
 //!   - prevents race conditions          (locks serialize the balance checks)
 //!   - prevents inconsistent balances    (sum of money is conserved, never negative)

@@ -204,7 +204,7 @@ async fn seed_accounts(
     }
 
     // Demo shortcut: Alice's limit-change hold window is 10 SECONDS instead of
-    // the production 12 hours, so the delayed-limit feature fits a recording.
+    // the production 12 hours, so the delayed-limit feature can be shown quickly.
     sqlx::query(
         r#"
         UPDATE accounts SET limit_hold_seconds = 10

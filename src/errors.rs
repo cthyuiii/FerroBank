@@ -38,12 +38,6 @@ impl From<sqlx::Error> for AppError {
     }
 }
 
-impl From<validator::ValidationErrors> for AppError {
-    fn from(err: validator::ValidationErrors) -> Self {
-        AppError::BadRequest(format!("validation failed: {err}"))
-    }
-}
-
 impl From<argon2::password_hash::Error> for AppError {
     fn from(err: argon2::password_hash::Error) -> Self {
         // Don't leak password-hash internals to the user.

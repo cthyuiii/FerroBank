@@ -193,7 +193,7 @@ async fn login_submit(
                     layout: LayoutCtx::anonymous(),
                     title: "Verify it's you".into(),
                     summary: vec![
-                        ("Sign-in from".into(), format!("{ip}")),
+                        ("Sign-in from".into(), ip.clone()),
                         ("Why".into(), "first-seen device or network".into()),
                     ],
                     action_url: "/login/stepup".into(),
@@ -255,7 +255,6 @@ async fn register_form() -> Result<HttpResponse, AppError> {
 async fn register_submit(
     form: web::Form<RegisterForm>,
     svc: web::Data<dyn AuthService>,
-    _session: Session,
 ) -> Result<HttpResponse, AppError> {
     let form = form.into_inner();
 
