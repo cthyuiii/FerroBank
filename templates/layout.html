@@ -295,6 +295,12 @@
       try { localStorage.setItem('fb-theme', isDark ? 'dark' : 'light'); } catch (e) {}
     }
 
+    // Mobile navigation drawer toggle (hamburger button in the top bar).
+    function fbToggleNav() {
+      var el = document.getElementById('fb-mobile-nav');
+      if (el) el.classList.toggle('hidden');
+    }
+
     // Generic client-side table filter, shared by the admin search boxes. Hides
     // rows whose text doesn't contain the query and toggles an "empty" element.
     function fbFilterTable(inputId, tbodyId, emptyId) {

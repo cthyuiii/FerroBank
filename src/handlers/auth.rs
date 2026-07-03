@@ -164,11 +164,12 @@ async fn login_submit(
     .execute(&state.db)
     .await;
 
-    // ── Risk-based step-up ──────────────────────────────────────────────
-    // Password alone is enough from a known origin. A first-seen browser or
-    // network must ALSO present a one-time code before any session exists.
-    // Only possible for linked customers (first login is exempt by design:
-    // no history yet, and unlinked users have no out-of-band channel).
+    // ── Two-factor sign-in: a one-time code on EVERY login ──────────────
+    // Password alone is never enough for a linked customer: after the
+    // password verifies, a one-time code must also be entered before any
+    // session exists. (First login is exempt by design: the user isn't
+    // linked yet and has no out-of-band channel, and is sent to the linking
+    // page below; from then on every sign-in is code-gated.)
     if user.role == Role::Customer && state.telegram_bot.is_some() {
         let linked: Option<bool> = sqlx::query_scalar::<_, bool>(
             r#"SELECT telegram_chat_id IS NOT NULL FROM users WHERE id = $1"#,
@@ -176,9 +177,10 @@ async fn login_submit(
         .bind(user.id)
         .fetch_optional(&state.db)
         .await?;
-        if matches!(linked, Some(true))
-            && login_origin_is_new(&state.db, user.id, &user_agent, &ip).await
-        {
+        if matches!(linked, Some(true)) {
+            // Still note whether this is a new origin, so we can explain WHY
+            // the code was asked for (and the new-origin alert fires as usual).
+            let new_origin = login_origin_is_new(&state.db, user.id, &user_agent, &ip).await;
             let challenge = otp_svc
                 .begin(
                     user.id,
@@ -189,12 +191,17 @@ async fn login_submit(
             // If Telegram delivery failed we must not lock the user out -
             // fall through to a normal (but alerted) login instead.
             if challenge.delivered {
+                let reason = if new_origin {
+                    "first-seen device or network"
+                } else {
+                    "two-factor sign-in"
+                };
                 let body = OtpConfirmPage {
                     layout: LayoutCtx::anonymous(),
                     title: "Verify it's you".into(),
                     summary: vec![
                         ("Sign-in from".into(), ip.clone()),
-                        ("Why".into(), "first-seen device or network".into()),
+                        ("Why".into(), reason.into()),
                     ],
                     action_url: "/login/stepup".into(),
                     cancel_url: "/login".into(),

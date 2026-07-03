@@ -40,17 +40,47 @@
       </button>
       {% if let Some(u) = layout.user %}
         {% if u.role == "customer" %}
-          <a href="/settings/telegram" class="text-stone-500 hover:text-amber-700 transition">Settings</a>
+          <a href="/settings/telegram" class="hidden sm:inline text-stone-500 hover:text-amber-700 transition">Settings</a>
         {% endif %}
         <span class="hidden sm:inline text-stone-500">{{ u.email }}</span>
         <span class="text-xs px-2 py-0.5 rounded-full bg-stone-100 text-stone-700 border border-stone-200 capitalize">{{ u.role }}</span>
         <form action="/logout" method="POST" class="inline">
           <button type="submit" class="text-stone-500 hover:text-amber-700 transition">Sign out</button>
         </form>
+        <!-- Mobile menu toggle: only for signed-in users, only below md. -->
+        <button
+          type="button"
+          onclick="fbToggleNav()"
+          aria-label="Toggle navigation menu"
+          aria-controls="fb-mobile-nav"
+          class="md:hidden inline-flex items-center justify-center w-9 h-9 rounded-md border border-stone-200 text-stone-600 hover:text-amber-700 hover:border-stone-300 transition">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16"/></svg>
+        </button>
       {% else %}
         <a href="/login" class="text-stone-700 hover:text-amber-700 transition">Sign in</a>
         <a href="/register" class="px-3 py-1.5 rounded-md bg-amber-700 text-white text-sm font-medium hover:bg-amber-800 transition">Get started</a>
       {% endif %}
     </div>
   </div>
+
+  {% if let Some(u) = layout.user %}
+  <!-- Mobile navigation drawer: hidden by default, toggled by the button above. -->
+  <nav id="fb-mobile-nav" class="hidden md:hidden border-t border-stone-200 bg-white">
+    <div class="max-w-6xl mx-auto px-6 py-2 flex flex-col text-sm text-stone-700">
+      {% if u.role == "admin" %}
+        <a href="/admin/dashboard" class="block py-2 hover:text-amber-700 transition">Admin</a>
+        <a href="/loans" class="block py-2 hover:text-amber-700 transition">Loans</a>
+      {% else if u.role == "teller" %}
+        <a href="/staff/accounts" class="block py-2 hover:text-amber-700 transition">Accounts</a>
+        <a href="/staff/transfers" class="block py-2 hover:text-amber-700 transition">Transfers</a>
+        <a href="/loans" class="block py-2 hover:text-amber-700 transition">Loans</a>
+      {% else %}
+        <a href="/accounts" class="block py-2 hover:text-amber-700 transition">Accounts</a>
+        <a href="/transfers" class="block py-2 hover:text-amber-700 transition">Transfers</a>
+        <a href="/loans" class="block py-2 hover:text-amber-700 transition">Loans</a>
+        <a href="/settings/telegram" class="block py-2 hover:text-amber-700 transition">Settings</a>
+      {% endif %}
+    </div>
+  </nav>
+  {% endif %}
 </header>
